@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Priority Pipeline — Logos</title>
+
+  <!-- Logos brand fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Gowun+Batang&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            forest:   '#0E2618',
+            sage:     '#4E635E',
+            parchment:'#E2E0C9',
+            softgray: '#E5E5E5',
+            warmgray: '#DDDED8',
+            coral:    '#E46962',
+            orange:   '#FA7B17',
+            muted:    '#808C78',
+            teal:     '#0C2B2D',
+            ink:      '#111520',
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- marked.js for markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <!-- Custom styles -->
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body class="h-full bg-forest text-parchment flex flex-col">
+
+  <!-- Top Navigation Bar -->
+  <header id="app-header" class="flex-none bg-teal border-b border-sage/40 px-5 h-14 flex items-center gap-4 z-40">
+    <div class="flex items-center gap-3 flex-none">
+      <!-- λ brand mark -->
+      <span class="text-2xl font-bold text-coral leading-none select-none" style="font-family: 'Times New Roman', Times, serif;">λ</span>
+      <span class="text-base font-semibold tracking-tight text-parchment" style="font-family: 'Times New Roman', Times, serif;">Priority Pipeline</span>
+    </div>
+
+    <!-- Spacer -->
+    <div class="flex-1"></div>
+
+    <!-- Status indicators -->
+    <div id="header-status" class="flex items-center gap-3 text-sm">
+      <span id="auth-badge" class="hidden items-center gap-1.5 bg-forest border border-sage/60 text-parchment px-2.5 py-1 rounded text-xs font-medium" style="font-family: Arial, Helvetica, sans-serif;">
+        <span class="w-1.5 h-1.5 bg-coral rounded-full"></span>
+        PAT Connected
+      </span>
+      <span id="project-badge" class="hidden items-center gap-1.5 bg-forest border border-sage/60 text-muted px-2.5 py-1 rounded text-xs font-medium" style="font-family: Arial, Helvetica, sans-serif;">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3 7h7v7H3zM14 7h7v7h-7zM3 17h7v4H3zM14 17h7v4h-7z"/>
+        </svg>
+        <span id="project-badge-text"></span>
+      </span>
+    </div>
+
+    <!-- Refresh button -->
+    <button id="btn-refresh" title="Refresh data" class="hidden p-2 rounded text-muted hover:text-parchment hover:bg-sage/20 transition-colors">
+      <svg id="refresh-icon" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+      </svg>
+    </button>
+
+    <!-- Settings button -->
+    <button id="btn-settings" title="Settings" class="p-2 rounded text-muted hover:text-parchment hover:bg-sage/20 transition-colors">
+      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+        <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+      </svg>
+    </button>
+  </header>
+
+  <!-- Main Content -->
+  <main id="app-main" class="flex-1 overflow-hidden flex flex-col">
+    <div id="app-content" class="flex-1 overflow-y-auto p-6">
+      <!-- Rendered by app.js -->
+    </div>
+  </main>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+    <!-- Backdrop -->
+    <div id="settings-backdrop" class="absolute inset-0 bg-ink/80 backdrop-blur-sm"></div>
+
+    <!-- Panel -->
+    <div class="relative bg-teal border border-sage/50 rounded-xl shadow-2xl w-full max-w-md">
+      <div class="p-6 border-b border-sage/30">
+        <div class="flex items-center justify-between">
+          <h2 class="text-lg font-bold text-parchment" style="font-family: 'Times New Roman', Times, serif;">Settings</h2>
+          <button id="btn-settings-close" class="p-1.5 rounded text-muted hover:text-parchment hover:bg-sage/20 transition-colors">
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <p class="text-sm text-muted mt-1" style="font-family: Arial, Helvetica, sans-serif;">Configure your GitHub project source</p>
+      </div>
+
+      <div class="p-6 space-y-5">
+        <!-- Owner -->
+        <div>
+          <label for="input-owner" class="block text-sm font-medium text-parchment mb-1.5" style="font-family: Arial, Helvetica, sans-serif;">
+            GitHub Owner / Org
+          </label>
+          <input
+            id="input-owner"
+            type="text"
+            placeholder="e.g. logos-co"
+            class="logos-input w-full"
+          />
+          <p class="text-xs text-muted mt-1" style="font-family: Arial, Helvetica, sans-serif;">GitHub username or organization name</p>
+        </div>
+
+        <!-- Project Number -->
+        <div>
+          <label for="input-project" class="block text-sm font-medium text-parchment mb-1.5" style="font-family: Arial, Helvetica, sans-serif;">
+            Project Number
+          </label>
+          <input
+            id="input-project"
+            type="number"
+            placeholder="e.g. 12"
+            class="logos-input w-full"
+          />
+          <p class="text-xs text-muted mt-1" style="font-family: Arial, Helvetica, sans-serif;">The number shown in the project URL</p>
+        </div>
+
+        <!-- PAT -->
+        <div>
+          <label for="input-pat" class="block text-sm font-medium text-parchment mb-1.5" style="font-family: Arial, Helvetica, sans-serif;">
+            Personal Access Token
+            <span class="ml-1.5 text-xs font-normal text-muted">(optional, for write actions)</span>
+          </label>
+          <div class="relative">
+            <input
+              id="input-pat"
+              type="password"
+              placeholder="ghp_xxxxxxxxxxxx"
+              class="logos-input w-full pr-10"
+            />
+            <button id="btn-toggle-pat" type="button" class="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-parchment transition-colors">
+              <svg id="pat-eye-icon" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+              </svg>
+            </button>
+          </div>
+          <p class="text-xs text-muted mt-1" style="font-family: Arial, Helvetica, sans-serif;">Requires <code class="bg-forest/80 px-1 py-0.5 rounded text-coral">public_repo</code> scope. Stored only in localStorage.</p>
+        </div>
+
+        <!-- Error message -->
+        <div id="settings-error" class="hidden bg-coral/10 border border-coral/40 rounded px-3 py-2.5 text-sm text-coral"></div>
+      </div>
+
+      <div class="p-6 pt-0 flex items-center gap-3">
+        <button id="btn-settings-save" class="flex-1 bg-coral hover:bg-orange text-white font-medium py-2.5 px-4 rounded transition-colors text-sm" style="font-family: Arial, Helvetica, sans-serif;">
+          Save &amp; Load
+        </button>
+        <button id="btn-settings-clear" class="px-4 py-2.5 rounded text-muted hover:text-parchment hover:bg-sage/20 transition-colors text-sm font-medium" style="font-family: Arial, Helvetica, sans-serif;">
+          Clear All
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast notification -->
+  <div id="toast" class="hidden fixed bottom-6 right-6 z-50 flex items-center gap-3 bg-teal border border-sage/50 rounded-xl px-4 py-3 shadow-2xl max-w-sm text-sm">
+    <span id="toast-icon" class="flex-none text-lg"></span>
+    <span id="toast-message" class="text-parchment" style="font-family: Arial, Helvetica, sans-serif;"></span>
+  </div>
+
+  <!-- App entry point -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
