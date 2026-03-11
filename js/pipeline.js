@@ -29,7 +29,7 @@ export function renderPipeline(container, items, projectTitle) {
           <span>Deps</span>
           <div class="flex items-center gap-2 font-normal normal-case tracking-normal" style="color:#808C78;">
             <span class="flex items-center gap-1">
-              <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#E46962;"></span>not set
+              <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#E46962;"></span>not tracked
             </span>
             <span class="flex items-center gap-1">
               <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#FA7B17;"></span>open
