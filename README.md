@@ -35,6 +35,10 @@ Add a `## Dependencies` section to an epic issue body:
 - `TODO` = team is a dependency but no tracking issue linked yet
 - A URL = issue state is fetched; open → pending, closed → done
 
+## Licence
+
+Licensed under either of [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE) at your option.
+
 ## Deploy
 
 Pushes to `main`/`master` auto-deploy via GitHub Actions → GitHub Pages.
