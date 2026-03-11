@@ -197,13 +197,17 @@ function updateHeaderBadges() {
   const projectBadgeText = document.getElementById('project-badge-text');
   const refreshBtn = document.getElementById('btn-refresh');
 
-  // Auth badge — show when PAT is set
-  if (hasPAT()) {
-    authBadge?.classList.replace('hidden', 'flex');
-    if (authBadge) authBadge.innerHTML = `<span class="w-1.5 h-1.5 bg-coral rounded-full"></span> PAT`;
-  } else {
-    authBadge?.classList.replace('flex', 'hidden');
-    authBadge?.classList.add('hidden');
+  // Auth badge — always visible, shows PAT Set / PAT Not Set
+  if (authBadge) {
+    authBadge.classList.remove('hidden');
+    authBadge.classList.add('flex');
+    if (hasPAT()) {
+      authBadge.textContent = 'PAT Set';
+      authBadge.style.color = '#E2E0C9';
+    } else {
+      authBadge.textContent = 'PAT Not Set';
+      authBadge.style.color = '#808C78';
+    }
   }
 
   // Mode toggle button — only shown when PAT is set
