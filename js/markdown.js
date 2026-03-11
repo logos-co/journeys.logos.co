@@ -102,6 +102,22 @@ export function addDepToBody(body, team, url) {
 }
 
 /**
+ * Extract the documentation URL from a ## Documentation section in an issue body.
+ * Returns the first URL found, or null.
+ */
+export function extractDocUrl(body) {
+  if (!body) return null;
+  const headingMatch = body.match(/^#{1,3}\s+Documentation[ \t]*\r?\n/m);
+  if (!headingMatch) return null;
+  const startIdx = headingMatch.index + headingMatch[0].length;
+  const rest = body.slice(startIdx);
+  const nextHeading = rest.match(/^#{1,3}\s/m);
+  const section = nextHeading ? rest.slice(0, nextHeading.index) : rest;
+  const urlMatch = section.match(/https?:\/\/\S+/);
+  return urlMatch ? urlMatch[0].replace(/[)\].,;>]+$/, '') : null;
+}
+
+/**
  * Extract blocked:* label from an array of label nodes.
  */
 export function extractBlockedTeam(labels) {

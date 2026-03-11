@@ -3,7 +3,7 @@
  */
 
 import { fetchIssuesBatch, addLabels, removeLabel, fetchIssue, updateIssueBody } from './api.js';
-import { renderMarkdown, extractDependencyIssues, extractAllBlockedLabels, addDepToBody } from './markdown.js';
+import { renderMarkdown, extractDependencyIssues, extractAllBlockedLabels, addDepToBody, extractDocUrl } from './markdown.js';
 import { getConfig, getReadPAT, getWritePAT, hasPAT, hasWritePAT } from './config.js';
 import { teamColor, statusBadge, showToast } from './app.js';
 import { REPO_TEAMS } from './teams.js';
@@ -40,6 +40,7 @@ export async function toggleDetail(itemId, item) {
 function renderDetailShell(item) {
   const issue = item.content;
   const canWrite = hasWritePAT();
+  const docUrl = extractDocUrl(issue.body || '');
 
   return `
     <div class="detail-panel" style="border-top:1px solid rgba(78,99,94,0.3);background:rgba(12,43,45,0.4);">
@@ -52,6 +53,19 @@ function renderDetailShell(item) {
             <span>·</span><span>#${issue.number}</span>
             <span>·</span>${statusBadge(issue.state)}
           </div>
+          <div class="flex items-center gap-2">
+          ${docUrl ? `
+            <a href="${escapeHtml(docUrl)}" target="_blank" rel="noopener"
+               class="flex-none flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded transition-colors"
+               style="border:1px solid rgba(106,174,123,0.5);color:#6AAE7B;font-family:Arial,Helvetica,sans-serif;"
+               onmouseover="this.style.borderColor='rgba(106,174,123,0.8)';this.style.background='rgba(106,174,123,0.1)'"
+               onmouseout="this.style.borderColor='rgba(106,174,123,0.5)';this.style.background=''">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              Docs
+            </a>
+          ` : ''}
           <a href="${issue.url}" target="_blank" rel="noopener"
              class="flex-none flex items-center gap-1.5 text-xs text-muted transition-colors px-2.5 py-1.5 rounded"
              style="border:1px solid rgba(78,99,94,0.4);font-family:Arial,Helvetica,sans-serif;"
@@ -62,6 +76,7 @@ function renderDetailShell(item) {
             </svg>
             View on GitHub
           </a>
+          </div>
         </div>
 
         <!-- Assignees -->
@@ -280,7 +295,7 @@ async function loadDependencies(itemId, item, bodyOverride) {
       issueRef = { url: fetched.issue.html_url, label: escapeHtml(fetched.issue.title) };
     } else {
       status = 'done';
-      statusColor = '#808C78';
+      statusColor = '#6AAE7B';
       issueRef = fetched?.issue ? { url: fetched.issue.html_url, label: escapeHtml(fetched.issue.title) } : null;
     }
     teamRows.push({ dep, status, statusColor, issueRef });

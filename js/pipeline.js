@@ -2,7 +2,7 @@
  * pipeline.js — Pipeline view rendering
  */
 
-import { extractBlockedTeam, extractDependencyIssues } from './markdown.js';
+import { extractBlockedTeam, extractDependencyIssues, extractDocUrl } from './markdown.js';
 import { toggleDetail } from './detail.js';
 import { hasWritePAT, getReadPAT } from './config.js';
 import { teamColor, statusBadge } from './app.js';
@@ -79,12 +79,19 @@ function renderPipelineRow(item, index, canDrag) {
     /^testnet\b/i.test(l.name.trim())
   );
 
-  const metaLabelsHtml = typeLabels.map(l =>
+  // Use parchment text so dark label colours (e.g. forest #0E2618) stay readable
+  const labelPill = (l) =>
     `<span class="inline-flex items-center px-1.5 py-px rounded text-xs"
-           style="background:#${l.color}22;color:#${l.color};border:1px solid #${l.color}44;font-family:Arial,Helvetica,sans-serif;">
+           style="background:#${l.color}20;color:#E2E0C9;border:1px solid #${l.color}55;font-family:Arial,Helvetica,sans-serif;">
        ${escapeHtml(l.name)}
-     </span>`
-  ).join('');
+     </span>`;
+
+  const metaLabelsHtml = typeLabels.map(labelPill).join('');
+  const releaseHtml = releaseLabels.length
+    ? releaseLabels.map(labelPill).join(' ')
+    : `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">—</span>`;
+
+  const docUrl = extractDocUrl(issue.body || '');
 
   return `
     <div>
@@ -117,22 +124,26 @@ function renderPipelineRow(item, index, canDrag) {
 
         <!-- Journey Type column (desktop) -->
         <div class="hidden md:flex items-center flex-wrap gap-1">
-          ${metaLabelsHtml || `<span class="text-xs text-muted italic" style="font-family:Arial,Helvetica,sans-serif;">—</span>`}
+          ${metaLabelsHtml || `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">—</span>`}
         </div>
 
+        <!-- Target Release column (desktop) -->
         <div class="hidden md:flex items-center">
-          ${releaseLabels.length
-            ? releaseLabels.map(l =>
-                `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
-                       style="background:#${l.color}22;color:#${l.color};border:1px solid #${l.color}44;font-family:Arial,Helvetica,sans-serif;">
-                   ${escapeHtml(l.name)}
-                 </span>`
-              ).join(' ')
-            : `<span class="text-xs text-muted italic" style="font-family:Arial,Helvetica,sans-serif;">—</span>`
-          }
+          ${releaseHtml}
         </div>
 
         <div class="flex items-center justify-end gap-2">
+          ${docUrl ? `
+            <a href="${escapeHtml(docUrl)}" target="_blank" rel="noopener"
+               onclick="event.stopPropagation()"
+               title="Open documentation"
+               class="flex-none text-xs px-1.5 py-0.5 rounded transition-colors"
+               style="border:1px solid rgba(78,99,94,0.4);color:#808C78;font-family:Arial,Helvetica,sans-serif;"
+               onmouseover="this.style.borderColor='rgba(228,105,98,0.5)';this.style.color='#E46962'"
+               onmouseout="this.style.borderColor='rgba(78,99,94,0.4)';this.style.color='#808C78'">
+              Docs ↗
+            </a>
+          ` : ''}
           ${statusBadge(issue.state)}
           <svg id="chevron-${item.id}" class="w-4 h-4 text-muted transition-all flex-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
