@@ -77,7 +77,6 @@ function renderDetailShell(item) {
           <div class="flex items-center gap-2 text-xs" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">
             <span>${issue.repository?.nameWithOwner || ''}</span>
             <span>·</span><span>#${issue.number}</span>
-            <span>·</span>${statusBadge(issue.state)}
           </div>
           <div class="flex items-center gap-2">
           ${docUrl ? `

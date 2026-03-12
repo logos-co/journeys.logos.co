@@ -105,6 +105,11 @@ export function addDepToBody(body, team, url) {
  * Extract the documentation URL from a ## Documentation section in an issue body.
  * Returns the first URL found, or null.
  */
+export function hasDocsDependency(body) {
+  const deps = extractDependencyIssues(body);
+  return deps.some(d => d.team.toLowerCase() === 'docs');
+}
+
 export function extractDocUrl(body) {
   if (!body) return null;
   const headingMatch = body.match(/^#{1,3}\s+Documentation[ \t]*\r?\n/m);

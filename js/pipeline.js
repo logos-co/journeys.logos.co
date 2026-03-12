@@ -2,7 +2,7 @@
  * pipeline.js — Pipeline view rendering
  */
 
-import { extractBlockedTeam, extractDependencyIssues, extractDocUrl } from './markdown.js';
+import { extractBlockedTeam, extractDependencyIssues, extractDocUrl, hasDocsDependency } from './markdown.js';
 import { toggleDetail, expandAll, collapseAll, getOpenCount } from './detail.js';
 import { hasWritePAT, getReadPAT } from './config.js';
 import { teamColor, statusBadge } from './app.js';
@@ -32,7 +32,7 @@ export function renderPipeline(container, items, projectTitle) {
             <span id="toggle-all-label">Expand All</span>
           </button>
           <div class="hidden md:flex items-center gap-3 text-xs" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">
-            <span class="flex items-center gap-1"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#E46962;flex-shrink:0;"></span>not tracked</span>
+            <span class="flex items-center gap-1"><span style="color:#FA7B17;font-size:11px;line-height:1;flex-shrink:0;">⚠</span>not tracked</span>
             <span class="flex items-center gap-1"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#FA7B17;flex-shrink:0;"></span>open</span>
             <span class="flex items-center gap-1"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#6AAE7B;flex-shrink:0;"></span>done</span>
           </div>
@@ -103,6 +103,7 @@ function renderPipelineRow(item, index, canDrag) {
     : `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">—</span>`;
 
   const docUrl = extractDocUrl(issue.body || '');
+  const docMissing = !docUrl && hasDocsDependency(issue.body || '');
 
   return `
     <div>
@@ -137,6 +138,10 @@ function renderPipelineRow(item, index, canDrag) {
                  onmouseout="this.style.borderColor='rgba(106,174,123,0.45)';this.style.background=''">
                 Docs ↗
               </a>
+            ` : ''}
+            ${docMissing ? `
+              <span class="flex-none self-center" title="Doc dependency exists but no documentation linked"
+                    style="color:#FA7B17;font-size:14px;line-height:1;cursor:help;">⚠</span>
             ` : ''}
           </div>
         </div>
@@ -202,7 +207,7 @@ async function loadAllPendingSummaries(items) {
     const teamCounts = new Map();
 
     const ensure = (team) => {
-      if (!teamCounts.has(team)) teamCounts.set(team, { notTracked: 0, pending: 0, done: 0 });
+      if (!teamCounts.has(team)) teamCounts.set(team, { notTracked: 0, pending: 0, done: 0, url: null });
       return teamCounts.get(team);
     };
 
@@ -213,6 +218,7 @@ async function loadAllPendingSummaries(items) {
       const dep = entry.urlDeps[i];
       const result = results[entry.startIdx + i];
       const counts = ensure(dep.team);
+      if (!counts.url) counts.url = dep.url;
       if (result?.error || result?.issue?.state === 'open') {
         counts.pending++;
       } else {
@@ -231,18 +237,26 @@ const DEP_COLORS = { notTracked: '#E46962', pending: '#FA7B17', done: '#6AAE7B' 
 function renderDepDots(teamCounts) {
   if (!teamCounts.size) return '';
 
-  return [...teamCounts.entries()].map(([team, { notTracked, pending, done }]) => {
+  return [...teamCounts.entries()].map(([team, { notTracked, pending, done, url }]) => {
     let color, statusText;
     if (pending > 0)         { color = DEP_COLORS.pending;    statusText = 'pending'; }
     else if (notTracked > 0) { color = DEP_COLORS.notTracked; statusText = 'not tracked'; }
     else                     { color = DEP_COLORS.done;       statusText = 'done'; }
 
-    return `<span title="${escapeHtml(team)}: ${statusText}"
-                  class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs"
-                  style="background:rgba(255,255,255,0.7);border:1px solid rgba(78,99,94,0.25);font-family:Arial,Helvetica,sans-serif;color:#4E635E;white-space:nowrap;">
-              <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;"></span>
+    const indicator = statusText === 'not tracked'
+      ? `<span style="color:#FA7B17;font-size:11px;line-height:1;flex-shrink:0;">⚠</span>`
+      : `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;"></span>`;
+
+    const tag = url ? 'a' : 'span';
+    const linkAttrs = url ? `href="${escapeHtml(url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"` : '';
+
+    return `<${tag} ${linkAttrs} title="${escapeHtml(team)}: ${statusText}"
+                  class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs transition-colors"
+                  style="background:rgba(255,255,255,0.7);border:1px solid rgba(78,99,94,0.25);font-family:Arial,Helvetica,sans-serif;color:#4E635E;white-space:nowrap;${url ? 'cursor:pointer;text-decoration:none;' : ''}"
+                  ${url ? `onmouseover="this.style.background='rgba(78,99,94,0.1)'" onmouseout="this.style.background='rgba(255,255,255,0.7)'"` : ''}>
+              ${indicator}
               ${escapeHtml(team)}
-            </span>`;
+            </${tag}>`;
   }).join('');
 }
 

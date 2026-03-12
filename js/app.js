@@ -23,8 +23,12 @@ let state = {
 // Utility: Team colour from name (consistent hash → hue)
 // ---------------------------------------------------------------------------
 
+const TEAM_COLOR_OVERRIDES = { 'red team': [0, 70, 55] };
+
 export function teamColor(teamName, alpha = 1) {
   if (!teamName) return `hsla(220, 15%, 40%, ${alpha})`;
+  const override = TEAM_COLOR_OVERRIDES[teamName.toLowerCase()];
+  if (override) return `hsla(${override[0]}, ${override[1]}%, ${override[2]}%, ${alpha})`;
   let hash = 0;
   for (let i = 0; i < teamName.length; i++) {
     hash = teamName.charCodeAt(i) + ((hash << 5) - hash);
