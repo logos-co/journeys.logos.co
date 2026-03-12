@@ -92,6 +92,7 @@ query GetProjectItems($owner: String!, $number: Int!, $cursor: String) {
               title
               body
               state
+              closedAt
               url
               repository { nameWithOwner }
               labels(first: 20) {
@@ -125,6 +126,7 @@ query GetProjectItemsOrg($owner: String!, $number: Int!, $cursor: String) {
               title
               body
               state
+              closedAt
               url
               repository { nameWithOwner }
               labels(first: 20) {

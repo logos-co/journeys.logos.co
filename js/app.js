@@ -339,7 +339,7 @@ function renderErrorState(message) {
                 Needs <code style="background:rgba(78,99,94,0.1);padding:0.1em 0.3em;border-radius:3px;">read:project</code> and
                 <code style="background:rgba(78,99,94,0.1);padding:0.1em 0.3em;border-radius:3px;">public_repo</code> scopes.
               </p>
-              <a href="https://github.com/settings/personal-access-tokens/new?description=Priority+Pipeline&scopes=read:project,public_repo"
+              <a href="https://github.com/settings/tokens/new?scopes=read:project,public_repo&description=Priority+Pipeline"
                  target="_blank" rel="noopener"
                  style="display:inline-flex;align-items:center;gap:0.4rem;font-size:0.8rem;font-family:Arial,Helvetica,sans-serif;color:#E46962;text-decoration:underline;text-underline-offset:2px;"
                  onmouseover="this.style.color='#FA7B17'" onmouseout="this.style.color='#E46962'">

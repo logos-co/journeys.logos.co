@@ -11,13 +11,31 @@ import { fetchIssuesBatch } from './api.js';
 export function renderPipeline(container, items, projectTitle) {
   const canDrag = hasWritePAT();
 
+  // Split into open and closed; closed sorted by most recently closed first
+  const openItems = items.filter(i => i.content?.state !== 'CLOSED');
+  const closedItems = items
+    .filter(i => i.content?.state === 'CLOSED')
+    .sort((a, b) => (b.content.closedAt || '').localeCompare(a.content.closedAt || ''));
+
+  const columnHeader = `
+        <div class="hidden md:block pointer-events-none select-none">
+          <div class="grid grid-cols-[1fr_8rem_9rem_10rem_2rem] gap-4 items-end px-4 py-1.5 text-xs font-semibold uppercase tracking-wider"
+               style="color:#808C78;font-family:Arial,Helvetica,sans-serif;border:1px solid transparent;border-left:3px solid transparent;border-bottom:1px solid rgba(78,99,94,0.2);">
+            <div>Journey</div>
+            <div>Journey<br>Type</div>
+            <div>Target<br>Release</div>
+            <div>Deps</div>
+            <div></div>
+          </div>
+        </div>`;
+
   container.innerHTML = `
     <div class="max-w-5xl mx-auto space-y-4">
       <div class="flex items-center justify-between mb-2">
         <div>
           <h1 class="text-2xl font-bold text-forest" style="font-family:'Times New Roman',Times,serif;">${escapeHtml(projectTitle || 'Priority Pipeline')}</h1>
           <p class="text-sm text-muted mt-0.5" style="font-family:Arial,Helvetica,sans-serif;">
-            ${items.length} journey${items.length !== 1 ? 's' : ''}
+            ${openItems.length} open journey${openItems.length !== 1 ? 's' : ''}
             ${canDrag ? '<span class="ml-2 text-xs text-coral font-medium">· Drag rows to reorder</span>' : ''}
           </p>
         </div>
@@ -40,31 +58,34 @@ export function renderPipeline(container, items, projectTitle) {
       </div>
 
       <div id="pipeline-list" class="space-y-1.5">
-        <div class="hidden md:block pointer-events-none select-none">
-          <div class="grid grid-cols-[1fr_8rem_9rem_10rem_2rem] gap-4 items-end px-4 py-1.5 text-xs font-semibold uppercase tracking-wider"
-               style="color:#808C78;font-family:Arial,Helvetica,sans-serif;border:1px solid transparent;border-left:3px solid transparent;border-bottom:1px solid rgba(78,99,94,0.2);">
-            <div>Journey</div>
-            <div>Journey<br>Type</div>
-            <div>Target<br>Release</div>
-            <div>Deps</div>
-            <div></div>
-          </div>
-        </div>
-        ${items.map((item, index) => renderPipelineRow(item, index, canDrag)).join('')}
+        ${columnHeader}
+        ${openItems.map((item, index) => renderPipelineRow(item, index, canDrag)).join('')}
       </div>
 
-      ${items.length === 0 ? `
+      ${openItems.length === 0 ? `
         <div class="text-center py-16 text-muted" style="font-family:Arial,Helvetica,sans-serif;">
           <p class="text-4xl mb-4 opacity-40" style="font-family:'Times New Roman',Times,serif;">λ</p>
-          <p class="text-sm">No issues found in this project</p>
+          <p class="text-sm">No open journeys found</p>
+        </div>
+      ` : ''}
+
+      ${closedItems.length > 0 ? `
+        <div class="mt-8">
+          <h2 class="text-lg font-bold text-forest mb-1" style="font-family:'Times New Roman',Times,serif;">Completed</h2>
+          <p class="text-sm text-muted mb-3" style="font-family:Arial,Helvetica,sans-serif;">${closedItems.length} closed journey${closedItems.length !== 1 ? 's' : ''}</p>
+          <div id="closed-list" class="space-y-1.5" style="opacity:0.7;">
+            ${columnHeader}
+            ${closedItems.map((item, index) => renderPipelineRow(item, index, false)).join('')}
+          </div>
         </div>
       ` : ''}
     </div>
   `;
 
-  attachRowClickHandlers(items);
-  attachToggleAllHandler(items);
-  loadAllPendingSummaries(items);
+  const allItems = [...openItems, ...closedItems];
+  attachRowClickHandlers(allItems);
+  attachToggleAllHandler(allItems);
+  loadAllPendingSummaries(allItems);
 }
 
 function renderPipelineRow(item, index, canDrag) {
