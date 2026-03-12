@@ -3,7 +3,7 @@
  */
 
 import { extractBlockedTeam, extractDependencyIssues, extractDocUrl } from './markdown.js';
-import { toggleDetail } from './detail.js';
+import { toggleDetail, expandAll, collapseAll, getOpenCount } from './detail.js';
 import { hasWritePAT, getReadPAT } from './config.js';
 import { teamColor, statusBadge } from './app.js';
 import { fetchIssuesBatch } from './api.js';
@@ -21,10 +21,21 @@ export function renderPipeline(container, items, projectTitle) {
             ${canDrag ? '<span class="ml-2 text-xs text-coral font-medium">· Drag rows to reorder</span>' : ''}
           </p>
         </div>
-        <div class="hidden md:flex items-center gap-3 text-xs" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">
-          <span class="flex items-center gap-1"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#E46962;flex-shrink:0;"></span>not tracked</span>
-          <span class="flex items-center gap-1"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#FA7B17;flex-shrink:0;"></span>open</span>
-          <span class="flex items-center gap-1"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#6AAE7B;flex-shrink:0;"></span>done</span>
+        <div class="flex items-center gap-4">
+          <button id="btn-toggle-all" class="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded transition-colors"
+                  style="color:#808C78;border:1px solid rgba(78,99,94,0.3);font-family:Arial,Helvetica,sans-serif;"
+                  onmouseover="this.style.background='rgba(78,99,94,0.1)'"
+                  onmouseout="this.style.background=''">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5"/>
+            </svg>
+            <span id="toggle-all-label">Expand All</span>
+          </button>
+          <div class="hidden md:flex items-center gap-3 text-xs" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">
+            <span class="flex items-center gap-1"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#E46962;flex-shrink:0;"></span>not tracked</span>
+            <span class="flex items-center gap-1"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#FA7B17;flex-shrink:0;"></span>open</span>
+            <span class="flex items-center gap-1"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#6AAE7B;flex-shrink:0;"></span>done</span>
+          </div>
         </div>
       </div>
 
@@ -52,6 +63,7 @@ export function renderPipeline(container, items, projectTitle) {
   `;
 
   attachRowClickHandlers(items);
+  attachToggleAllHandler(items);
   loadAllPendingSummaries(items);
 }
 
@@ -73,11 +85,14 @@ function renderPipelineRow(item, index, canDrag) {
     /^testnet\b/i.test(l.name.trim())
   );
 
-  // Use label colour as text (readable on sandy bg); darken forest black slightly
+  // Override journey-type label colours so user / developer / node operator are distinct
+  const JOURNEY_COLORS = { 'user': 'D94F45', 'developer': '3B7CB8', 'node operator': 'C4912C' };
+
   const labelPill = (l) => {
-    const textColor = l.color.toLowerCase() === '0e2618' ? '#4E635E' : `#${l.color}`;
+    const raw = JOURNEY_COLORS[l.name.trim().toLowerCase()] || l.color;
+    const textColor = raw === l.color && l.color.toLowerCase() === '0e2618' ? '4E635E' : raw;
     return `<span class="inline-flex items-center px-1.5 py-px rounded text-xs font-medium"
-           style="background:#${l.color}18;color:${textColor};border:1px solid #${l.color}50;font-family:Arial,Helvetica,sans-serif;">
+           style="background:#${raw}18;color:#${textColor};border:1px solid #${raw}50;font-family:Arial,Helvetica,sans-serif;">
        ${escapeHtml(l.name)}
      </span>`;
   };
@@ -229,6 +244,25 @@ function renderDepDots(teamCounts) {
               ${escapeHtml(team)}
             </span>`;
   }).join('');
+}
+
+function attachToggleAllHandler(items) {
+  const btn = document.getElementById('btn-toggle-all');
+  const label = document.getElementById('toggle-all-label');
+  if (!btn || !label) return;
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    if (getOpenCount() > 0) {
+      collapseAll();
+      label.textContent = 'Expand All';
+    } else {
+      label.textContent = 'Expanding...';
+      await expandAll(items);
+      label.textContent = 'Collapse All';
+    }
+    btn.disabled = false;
+  });
 }
 
 function attachRowClickHandlers(items) {

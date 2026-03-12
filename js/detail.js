@@ -12,7 +12,32 @@ import { REPO_TEAMS } from './teams.js';
 const openDetails = new Set();
 const itemRegistry = new Map(); // itemId → item (for body refresh after mutations)
 
-export async function toggleDetail(itemId, item) {
+export function getOpenCount() { return openDetails.size; }
+
+function syncToggleLabel() {
+  const label = document.getElementById('toggle-all-label');
+  if (label) label.textContent = openDetails.size > 0 ? 'Collapse All' : 'Expand All';
+}
+
+export async function expandAll(items) {
+  for (const item of items) {
+    if (!openDetails.has(item.id)) await toggleDetail(item.id, item, true);
+  }
+  syncToggleLabel();
+}
+
+export function collapseAll() {
+  for (const itemId of [...openDetails]) {
+    const panel = document.getElementById(`detail-${itemId}`);
+    if (panel) { panel.innerHTML = ''; panel.classList.add('hidden'); }
+    const chevron = document.getElementById(`chevron-${itemId}`);
+    if (chevron) chevron.classList.remove('rotate-180');
+  }
+  openDetails.clear();
+  syncToggleLabel();
+}
+
+export async function toggleDetail(itemId, item, skipSync = false) {
   const panel = document.getElementById(`detail-${itemId}`);
   if (!panel) return;
 
@@ -31,6 +56,7 @@ export async function toggleDetail(itemId, item) {
     panel.innerHTML = renderDetailShell(item);
     await loadDependencies(itemId, item);
   }
+  if (!skipSync) syncToggleLabel();
 }
 
 // ---------------------------------------------------------------------------
