@@ -13,6 +13,8 @@ const openDetails = new Set();
 const itemRegistry = new Map(); // itemId → item (for body refresh after mutations)
 
 export function getOpenCount() { return openDetails.size; }
+export function getOpenIds() { return [...openDetails]; }
+export function clearOpenState() { openDetails.clear(); }
 
 function syncToggleLabel() {
   const label = document.getElementById('toggle-all-label');

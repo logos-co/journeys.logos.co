@@ -348,8 +348,7 @@ code {
   font-size: 0.72rem;
   letter-spacing: 0.04em;
   color: var(--color-muted);
-  min-width: 2rem;
-  text-align: right;
+  text-align: left;
 }
 
 /* ------------------------------------------------------------------ */

@@ -5,7 +5,7 @@
 import { getConfig, saveConfig, clearConfig, isConfigured, hasPAT, hasWritePAT, isAdminMode, toggleAdminMode, getReadPAT } from './config.js';
 import { fetchProjectItems } from './api.js';
 import { renderPipeline } from './pipeline.js';
-import { registerLabelHandlers } from './detail.js';
+import { registerLabelHandlers, getOpenIds, clearOpenState, toggleDetail } from './detail.js';
 import { initDrag } from './drag.js';
 
 // ---------------------------------------------------------------------------
@@ -182,11 +182,18 @@ function initSettings() {
   });
 
   // Mode toggle
-  document.getElementById('btn-mode-toggle')?.addEventListener('click', () => {
+  document.getElementById('btn-mode-toggle')?.addEventListener('click', async () => {
+    const previouslyOpen = getOpenIds();
+    clearOpenState();
     toggleAdminMode();
     updateHeaderBadges();
     // Re-render pipeline to show/hide write controls
     if (state.items.length) renderProjectView();
+    // Re-expand previously open panels
+    for (const id of previouslyOpen) {
+      const item = state.items.find(i => i.id === id);
+      if (item) await toggleDetail(id, item, true);
+    }
   });
 }
 
