@@ -408,6 +408,12 @@ function renderErrorState(message) {
             </div>
           </div>
 
+          <p class="text-xs pt-2" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">
+            Don't want to add a token? <a href="https://github.com/orgs/logos-co/projects/12" target="_blank" rel="noopener"
+               style="color:#E46962;text-decoration:underline;text-underline-offset:2px;"
+               onmouseover="this.style.color='#FA7B17'" onmouseout="this.style.color='#E46962'">View the project directly on GitHub ↗</a>
+          </p>
+
         </div>
         ` : `
         <div class="flex items-center gap-3">
