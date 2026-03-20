@@ -409,7 +409,7 @@ function renderDepDots(teamCounts) {
 
   return [...teamCounts.entries()].map(([team, { notTracked, pending, pendingKw, done, url, targetDate }]) => {
     let color, statusText;
-    if (pendingKw > 0)       { color = DEP_COLORS.notTracked; statusText = 'pending'; }
+    if (pendingKw > 0)       { color = DEP_COLORS.pending;    statusText = 'pending'; }
     else if (pending > 0)    { color = DEP_COLORS.pending;    statusText = 'pending'; }
     else if (notTracked > 0) { color = DEP_COLORS.notTracked; statusText = 'not tracked'; }
     else                     { color = DEP_COLORS.done;       statusText = 'done'; }

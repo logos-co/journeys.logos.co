@@ -833,7 +833,7 @@ async function refreshRowDepBadges(itemId, item) {
     else if (notTracked > 0) statusText = 'not tracked';
     else statusText = 'done';
 
-    const color = statusText === 'pending' ? (pendingKw > 0 ? '#E46962' : '#FA7B17') : statusText === 'not tracked' ? '#E46962' : '#6AAE7B';
+    const color = statusText === 'pending' ? '#FA7B17' : statusText === 'not tracked' ? '#E46962' : '#6AAE7B';
     const indicator = statusText === 'not tracked'
       ? `<span style="color:#FA7B17;font-size:11px;line-height:1;flex-shrink:0;">⚠</span>`
       : `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;"></span>`;
