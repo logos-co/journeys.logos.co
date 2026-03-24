@@ -140,6 +140,42 @@ export function targetDateColor(dateStr) {
 }
 
 /**
+ * Update the URL/reference on a specific dependency line in the issue body.
+ * Matches by team name (case-insensitive). Preserves any existing target date.
+ *
+ * @param {string} body     — current issue body
+ * @param {string} team     — team name to match
+ * @param {string} newUrl   — new URL to set
+ * @returns {string} updated body
+ */
+export function setDepUrl(body, team, newUrl) {
+  const headingMatch = body.match(/^(#{1,3}\s+Dependencies[ \t]*\r?\n)/m);
+  if (!headingMatch) return body;
+
+  const startIdx = headingMatch.index + headingMatch[0].length;
+  const rest = body.slice(startIdx);
+  const nextHeading = rest.match(/^#{1,3}\s/m);
+  const sectionEnd = nextHeading ? nextHeading.index : rest.length;
+  const section = rest.slice(0, sectionEnd);
+
+  const dateRe = /\b(\d{2}(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\d{2})\s*$/i;
+  const lines = section.split('\n');
+  const updated = lines.map(line => {
+    const m = line.match(/^(-[ \t]+[^:\r\n]+:)(.*)/);
+    if (!m) return line;
+    const teamName = m[1].replace(/^-[ \t]+/, '').replace(/:$/, '').trim();
+    if (teamName.toLowerCase() !== team.toLowerCase()) return line;
+    // Preserve existing date if any
+    const existingVal = m[2].trim();
+    const dateMatch = existingVal.match(dateRe);
+    const dateSuffix = dateMatch ? ` ${dateMatch[1]}` : '';
+    return `${m[1]} ${newUrl}${dateSuffix}`;
+  });
+
+  return body.slice(0, startIdx) + updated.join('\n') + body.slice(startIdx + sectionEnd);
+}
+
+/**
  * Update the target date on a specific dependency line in the issue body.
  * Matches by team name (case-insensitive). If newDate is null/empty, removes the date.
  *
@@ -251,6 +287,172 @@ export function extractAllBlockedLabels(labels) {
       team: l.name.replace(/^blocked:/i, '').trim(),
       color: l.color,
     }));
+}
+
+// ─── 3-Stakeholder model: section parsing ────────────────────────────────────
+
+function extractSection(body, heading) {
+  if (!body) return '';
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`^#{1,3}\\s+${escaped}[ \\t]*\\r?\\n`, 'm');
+  const m = body.match(re);
+  if (!m) return '';
+  const start = m.index + m[0].length;
+  const rest = body.slice(start);
+  const next = rest.match(/^#{1,3}\s/m);
+  return next ? rest.slice(0, next.index) : rest;
+}
+
+function getField(section, field) {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = section.match(new RegExp(`^-[ \\t]+${escaped}:[ \\t]*(.+?)[ \\t]*$`, 'm'));
+  return m ? m[1].trim() : null;
+}
+
+/** Parse ## R&D section → { team, milestone, date } */
+export function extractRnD(body) {
+  const section = extractSection(body, 'R&D');
+  return {
+    team:      getField(section, 'team'),
+    milestone: getField(section, 'milestone'),
+    date:      getField(section, 'date'),
+  };
+}
+
+/** Parse ## Doc Packet section — returns content string if non-trivial, else null */
+export function extractDocPacket(body) {
+  const content = extractSection(body, 'Doc Packet').trim();
+  return content.length > 150 ? content : null;
+}
+
+/**
+ * Parse ## Documentation section for the link.
+ * Looks for `- link: URL` first; falls back to bare URL (backward compat).
+ */
+export function extractDocumentation(body) {
+  const section = extractSection(body, 'Documentation');
+  const linkM = section.match(/^-[ \t]+link:[ \t]*(\S+)/m);
+  if (linkM) return { link: linkM[1] };
+  const urlM = section.match(/https?:\/\/\S+/);
+  return { link: urlM ? urlM[0].replace(/[)\].,;>]+$/, '') : null };
+}
+
+/** Parse ## Red Team section → { tracking } */
+export function extractRedTeam(body) {
+  const section = extractSection(body, 'Red Team');
+  const m = section.match(/^-[ \t]+tracking:[ \t]*(\S+)/m);
+  return { tracking: m ? m[1] : null };
+}
+
+// ─── 3-Stakeholder model: state computation ───────────────────────────────────
+
+/** @returns {'to-be-confirmed'|'confirmed'|'in-progress'|'doc-packet-delivered'} */
+export function computeRnDState(rnd, docPacketContent) {
+  if (docPacketContent) return 'doc-packet-delivered';
+  if (!rnd.team || !rnd.milestone) return 'to-be-confirmed';
+  if (!rnd.date) return 'confirmed';
+  return 'in-progress';
+}
+
+/**
+ * @param {string|null} link
+ * @param {{ type: string, state: string }|null} ref
+ * @returns {'waiting'|'in-progress'|'ready-for-review'|'merged'}
+ */
+export function computeDocsState(link, ref) {
+  if (!link) return 'waiting';
+  if (!ref || ref.state === 'error') return 'in-progress';
+  if (ref.type === 'url') return 'merged';
+  if (ref.type === 'pr') return ref.state === 'merged' ? 'merged' : ref.state === 'open' ? 'ready-for-review' : 'merged';
+  // issue: closed issue means work moved on but link not updated — keep as in-progress
+  return ref.state === 'open' ? 'in-progress' : 'in-progress';
+}
+
+/**
+ * @param {string|null} tracking
+ * @param {{ type: string, state: string }|null} ref
+ * @returns {'waiting'|'in-progress'|'done'}
+ */
+export function computeRedTeamState(tracking, ref) {
+  if (!tracking) return 'waiting';
+  if (!ref || ref.state === 'error') return 'in-progress';
+  if (ref.type === 'issue') return ref.state === 'closed' ? 'done' : 'in-progress';
+  return 'done'; // non-issue URL = done
+}
+
+/** Compute which action:* labels should be present given current states. */
+export function computeActionLabels(rndState, docsState, redTeamState) {
+  const labels = [];
+  // action:rnd when: doc packet not delivered (covers migration case where docs may
+  // already be merged but no doc packet was provided), OR docs ready-for-review (R&D review)
+  if (rndState !== 'doc-packet-delivered' || docsState === 'ready-for-review') labels.push('action:rnd');
+  if (rndState === 'doc-packet-delivered' && docsState !== 'merged') labels.push('action:docs');
+  if (docsState === 'ready-for-review' && redTeamState !== 'done') labels.push('action:red-team');
+  return labels;
+}
+
+// ─── 3-Stakeholder model: body update helpers ─────────────────────────────────
+
+function upsertSectionField(body, heading, field, value) {
+  const escapedH = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const headingRe = new RegExp(`^(#{1,3}\\s+${escapedH}[ \\t]*\\r?\\n)`, 'm');
+  const headingMatch = body.match(headingRe);
+
+  if (!headingMatch) {
+    return `${(body || '').trimEnd()}\n\n## ${heading}\n- ${field}: ${value}\n`;
+  }
+  const startIdx = headingMatch.index + headingMatch[0].length;
+  const rest = body.slice(startIdx);
+  const nextHeading = rest.match(/^#{1,3}\s/m);
+  const sectionEnd = nextHeading ? nextHeading.index : rest.length;
+  const section = rest.slice(0, sectionEnd);
+
+  const escapedF = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const fieldRe = new RegExp(`^(-[ \\t]+${escapedF}:)[ \\t].*$`, 'mi');
+  const updated = fieldRe.test(section)
+    ? section.replace(fieldRe, `$1 ${value}`)
+    : section.trimEnd() + `\n- ${field}: ${value}\n`;
+
+  return body.slice(0, startIdx) + updated + body.slice(startIdx + sectionEnd);
+}
+
+/** Update team/milestone/date in ## R&D section. */
+export function setRnDField(body, field, value) {
+  return upsertSectionField(body, 'R&D', field, value);
+}
+
+/** Update ## Documentation link field. */
+export function setDocLink(body, link) {
+  return upsertSectionField(body, 'Documentation', 'link', link);
+}
+
+/** Update ## Red Team tracking field. */
+export function setRedTeamTracking(body, link) {
+  return upsertSectionField(body, 'Red Team', 'tracking', link);
+}
+
+/** Return a new journey issue body template. */
+export function newIssueBody(team = '') {
+  return `## R&D
+- team:${team ? ' ' + team : ''}
+- milestone:${' '}
+- date:${' '}
+
+## Doc Packet
+
+## Documentation
+- link:${' '}
+
+## Red Team
+- tracking:${' '}
+`;
+}
+
+/** Extract the description part of a body (content before the first ## R&D / ## Doc Packet / ## Documentation / ## Red Team heading). */
+export function extractDescription(body) {
+  if (!body) return '';
+  const m = body.match(/^#{1,3}\s+(R&D|Doc Packet|Documentation|Red Team)\b/m);
+  return m ? body.slice(0, m.index).trim() : body.trim();
 }
 
 function escapeHtml(str) {

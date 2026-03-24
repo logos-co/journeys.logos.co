@@ -2,18 +2,26 @@
  * detail.js — Journey detail / drill-down view
  */
 
-import { fetchIssuesBatch, addLabels, removeLabel, fetchIssue, updateIssueBody } from './api.js';
-import { renderMarkdown, extractDependencyIssues, extractAllBlockedLabels, addDepToBody, setDepDate, extractDocUrl, targetDateColor } from './markdown.js';
-import { getConfig, getReadPAT, getWritePAT, hasPAT, hasWritePAT } from './config.js';
-import { teamColor, statusBadge, showToast } from './app.js';
-import { REPO_TEAMS } from './teams.js';
+import {
+  fetchIssuesBatch, addLabels, removeLabel, fetchIssue,
+  updateIssueBody, createLabel, fetchRef, syncActionLabels,
+} from './api.js';
+import {
+  renderMarkdown, extractAllBlockedLabels, extractDescription,
+  extractRnD, extractDocPacket, extractDocumentation, extractRedTeam,
+  computeRnDState, computeDocsState, computeRedTeamState, computeActionLabels,
+  setRnDField, setDocLink, setRedTeamTracking,
+} from './markdown.js';
+import { getReadPAT, getWritePAT, hasWritePAT } from './config.js';
+import { teamColor, showToast } from './app.js';
+import { renderStakeholderBadges } from './pipeline.js';
 
 // Track open detail panels and their item references
-const openDetails = new Set();
-const itemRegistry = new Map(); // itemId → item (for body refresh after mutations)
+const openDetails  = new Set();
+const itemRegistry = new Map(); // itemId → item
 
-export function getOpenCount() { return openDetails.size; }
-export function getOpenIds() { return [...openDetails]; }
+export function getOpenCount()  { return openDetails.size; }
+export function getOpenIds()    { return [...openDetails]; }
 export function clearOpenState() { openDetails.clear(); }
 
 function syncToggleLabel() {
@@ -56,7 +64,7 @@ export async function toggleDetail(itemId, item, skipSync = false) {
     const chevron = document.getElementById(`chevron-${itemId}`);
     if (chevron) chevron.classList.add('rotate-180');
     panel.innerHTML = renderDetailShell(item);
-    await loadDependencies(itemId, item);
+    await loadWorkflowSections(itemId, item);
   }
   if (!skipSync) syncToggleLabel();
 }
@@ -68,7 +76,7 @@ export async function toggleDetail(itemId, item, skipSync = false) {
 function renderDetailShell(item) {
   const issue = item.content;
   const canWrite = hasWritePAT();
-  const docUrl = extractDocUrl(issue.body || '');
+  const description = extractDescription(issue.body || '');
 
   return `
     <div class="detail-panel" style="border-top:1px solid rgba(78,99,94,0.2);background:rgba(221,222,216,0.6);">
@@ -80,19 +88,6 @@ function renderDetailShell(item) {
             <span>${issue.repository?.nameWithOwner || ''}</span>
             <span>·</span><span>#${issue.number}</span>
           </div>
-          <div class="flex items-center gap-2">
-          ${docUrl ? `
-            <a href="${escapeHtml(docUrl)}" target="_blank" rel="noopener"
-               class="flex-none flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded transition-colors"
-               style="border:1px solid rgba(106,174,123,0.5);color:#6AAE7B;font-family:Arial,Helvetica,sans-serif;"
-               onmouseover="this.style.borderColor='rgba(106,174,123,0.8)';this.style.background='rgba(106,174,123,0.1)'"
-               onmouseout="this.style.borderColor='rgba(106,174,123,0.5)';this.style.background=''">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              Docs
-            </a>
-          ` : ''}
           <a href="${issue.url}" target="_blank" rel="noopener"
              class="flex-none flex items-center gap-1.5 text-xs text-muted transition-colors px-2.5 py-1.5 rounded"
              style="border:1px solid rgba(78,99,94,0.4);font-family:Arial,Helvetica,sans-serif;"
@@ -103,45 +98,508 @@ function renderDetailShell(item) {
             </svg>
             View on GitHub
           </a>
-          </div>
         </div>
+
+        <!-- Action banner (filled async) -->
+        <div id="action-banner-${item.id}"></div>
 
         <!-- Assignees -->
         ${renderAssignees(issue)}
 
-        <!-- Markdown body -->
-        <div>
-          <h3 class="text-xs font-semibold uppercase tracking-wider mb-3" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Description</h3>
-          <div class="markdown-body rounded p-5 overflow-x-auto" style="background:rgba(255,255,255,0.6);border:1px solid rgba(78,99,94,0.2);">
-            ${renderMarkdown(issue.body)}
+        <!-- Description -->
+        ${description ? `
+          <div>
+            <h3 class="text-xs font-semibold uppercase tracking-wider mb-3" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Description</h3>
+            <div class="markdown-body rounded p-5 overflow-x-auto" style="background:rgba(255,255,255,0.6);border:1px solid rgba(78,99,94,0.2);">
+              ${renderMarkdown(description)}
+            </div>
+          </div>
+        ` : ''}
+
+        <!-- Workflow sections (R&D / Doc Packet / Documentation / Red Team) -->
+        <div id="workflow-${item.id}">
+          <div class="flex items-center gap-2 text-muted text-sm py-2" style="font-family:Arial,Helvetica,sans-serif;">
+            <svg class="w-4 h-4 animate-spin text-coral" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            Loading…
           </div>
         </div>
 
-        <!-- Dependencies -->
+        <!-- Blocked labels -->
         <div>
-          <div class="flex items-center justify-between mb-3">
-            <h3 class="text-xs font-semibold uppercase tracking-wider" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">
-              Dependencies
-              <span id="dep-count-${item.id}" class="ml-2 font-normal normal-case"></span>
-            </h3>
-            ${canWrite ? renderAddDepButton(item) : ''}
+          <div class="flex items-center gap-2 mb-2">
+            <h3 class="text-xs font-semibold uppercase tracking-wider" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Blocked by</h3>
+            ${canWrite ? renderAddLabelButton(item) : ''}
           </div>
-          <!-- Add dep form (hidden by default) -->
-          ${canWrite ? renderAddDepForm(item) : ''}
-          <div id="dep-list-${item.id}" class="space-y-2">
-            <div class="flex items-center gap-2 text-muted text-sm py-2" style="font-family:Arial,Helvetica,sans-serif;">
-              <svg class="w-4 h-4 animate-spin text-coral" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-              </svg>
-              Loading…
-            </div>
+          <div id="blocked-labels-${item.id}" class="flex flex-wrap gap-2">
+            ${renderBlockedLabels(
+              extractAllBlockedLabels(issue.labels?.nodes || []),
+              item, canWrite
+            )}
           </div>
         </div>
 
       </div>
     </div>
   `;
+}
+
+// ---------------------------------------------------------------------------
+// Workflow sections
+// ---------------------------------------------------------------------------
+
+const RND_COLORS = {
+  'to-be-confirmed':      '#E46962',
+  'confirmed':            '#FA7B17',
+  'in-progress':          '#FA7B17',
+  'doc-packet-delivered': '#6AAE7B',
+};
+const DOCS_COLORS = {
+  'waiting':          '#808C78',
+  'in-progress':      '#FA7B17',
+  'ready-for-review': '#34befc',
+  'merged':           '#6AAE7B',
+};
+const REDTEAM_COLORS = {
+  'waiting':     '#808C78',
+  'in-progress': '#FA7B17',
+  'done':        '#6AAE7B',
+};
+const RND_STATE_LABELS = {
+  'to-be-confirmed':      'To Be Confirmed',
+  'confirmed':            'Confirmed',
+  'in-progress':          'In Progress',
+  'doc-packet-delivered': 'Doc Packet Delivered',
+};
+const DOCS_STATE_LABELS = {
+  'waiting':          'Waiting',
+  'in-progress':      'In Progress',
+  'ready-for-review': 'Ready for Review',
+  'merged':           'Merged',
+};
+const REDTEAM_STATE_LABELS = {
+  'waiting':     'Waiting',
+  'in-progress': 'In Progress',
+  'done':        'Done',
+};
+const RND_TEAMS = ['anon-comms', 'messaging', 'core', 'storage', 'blockchain', 'lez', 'devkit'];
+
+function stateBadgeHtml(label, color) {
+  return `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium"
+    style="background:${color}22;color:${color};border:1px solid ${color}55;font-family:Arial,Helvetica,sans-serif;">
+    <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${color};"></span>
+    ${escapeHtml(label)}
+  </span>`;
+}
+
+function sectionCard(heading, stateHtml, bodyHtml) {
+  return `
+    <div class="rounded p-4 space-y-3" style="background:rgba(255,255,255,0.6);border:1px solid rgba(78,99,94,0.2);">
+      <div class="flex items-center gap-2">
+        <h4 class="text-xs font-semibold uppercase tracking-wider" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">${escapeHtml(heading)}</h4>
+        ${stateHtml}
+      </div>
+      ${bodyHtml}
+    </div>`;
+}
+
+function fieldRow(label, valueHtml) {
+  return `<div class="flex items-center gap-2">
+    <span class="text-xs w-20 flex-none" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">${escapeHtml(label)}</span>
+    ${valueHtml}
+  </div>`;
+}
+
+async function loadWorkflowSections(itemId, item, bodyOverride) {
+  const body      = bodyOverride ?? item.content?.body ?? '';
+  const issue     = item.content;
+  const canWrite  = hasWritePAT();
+  const pat       = getReadPAT();
+
+  const rnd            = extractRnD(body);
+  const docPacketContent = extractDocPacket(body);
+  const { link: docsLink }       = extractDocumentation(body);
+  const { tracking: redTeamLink } = extractRedTeam(body);
+
+  // Fetch docs + redteam refs in parallel
+  const [docsRef, rtRef] = await Promise.all([
+    docsLink     ? fetchRef(docsLink,     pat) : Promise.resolve(null),
+    redTeamLink  ? fetchRef(redTeamLink,  pat) : Promise.resolve(null),
+  ]);
+
+  const rndState     = computeRnDState(rnd, docPacketContent);
+  const docsState    = computeDocsState(docsLink, docsRef);
+  const redTeamState = computeRedTeamState(redTeamLink, rtRef);
+  const expectedActions = computeActionLabels(rndState, docsState, redTeamState);
+
+  const actualLabels  = (issue.labels?.nodes || []).map(l => l.name);
+  const actualActions = actualLabels.filter(l => l.startsWith('action:'));
+  const mismatch = JSON.stringify([...expectedActions].sort()) !== JSON.stringify([...actualActions].sort());
+
+  const repoWithOwner = issue.repository?.nameWithOwner || '';
+  const issueNumber   = issue.number || 0;
+
+  // Render action banner
+  const bannerEl = document.getElementById(`action-banner-${itemId}`);
+  if (bannerEl) {
+    bannerEl.innerHTML = renderActionBanner(actualActions, expectedActions, mismatch, itemId, repoWithOwner, issueNumber);
+  }
+
+  // Render workflow sections
+  const workflowEl = document.getElementById(`workflow-${itemId}`);
+  if (!workflowEl) return;
+
+  workflowEl.innerHTML = renderWorkflowSections(
+    itemId, rnd, rndState, docPacketContent,
+    docsLink, docsRef, docsState,
+    redTeamLink, rtRef, redTeamState,
+    repoWithOwner, issueNumber, canWrite
+  );
+
+  attachWorkflowHandlers(itemId, repoWithOwner, issueNumber);
+
+  // Auto-sync labels in write mode if mismatch detected
+  if (mismatch && canWrite) {
+    const writePat = getWritePAT();
+    const [owner, repo] = repoWithOwner.split('/');
+    if (writePat && owner && repo && issueNumber) {
+      try {
+        const { added, removed } = await syncActionLabels(owner, repo, issueNumber, actualLabels, expectedActions, writePat);
+        // Update cached labels on the item so the reload sees the fixed state
+        if (item?.content?.labels?.nodes) {
+          item.content.labels.nodes = item.content.labels.nodes
+            .filter(l => !removed.includes(l.name))
+            .concat(added.map(name => ({ name, color: 'E46962' })));
+        }
+        // Reload the panel (same pattern as other saves)
+        await loadWorkflowSections(itemId, item, body);
+      } catch (err) {
+        console.warn('Auto-sync labels failed:', err);
+      }
+    }
+  }
+}
+
+function renderActionBanner(actualActions, expectedActions, mismatch, itemId, repoWithOwner, issueNumber) {
+  const ACTION_COLORS = {
+    'action:rnd':      '#3B7CB8',
+    'action:docs':     '#6AAE7B',
+    'action:red-team': '#E46962',
+  };
+  const labels = mismatch ? expectedActions : actualActions;
+  if (!mismatch && labels.length === 0) return '';
+
+  const pills = labels.map(l => {
+    const c = ACTION_COLORS[l] || '#808C78';
+    return `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
+      style="background:${c}22;color:${c};border:1px solid ${c}55;font-family:Arial,Helvetica,sans-serif;">
+      ${escapeHtml(l)}
+    </span>`;
+  }).join('');
+
+  const canWrite = hasWritePAT();
+  const warnHtml = mismatch ? `
+    <span class="text-xs" style="color:#FA7B17;font-family:Arial,Helvetica,sans-serif;">
+      ⚠ Action labels out of sync${canWrite ? ' — fixing…' : ''}
+    </span>` : '';
+
+  return `
+    <div class="flex items-center gap-2 flex-wrap px-3 py-2 rounded"
+         style="background:rgba(255,255,255,0.5);border:1px solid rgba(78,99,94,0.2);">
+      <span class="text-xs font-medium flex-none" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Action required:</span>
+      ${pills || `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">none</span>`}
+      ${warnHtml}
+    </div>`;
+}
+
+function renderWorkflowSections(
+  itemId, rnd, rndState, docPacketContent,
+  docsLink, docsRef, docsState,
+  redTeamLink, rtRef, redTeamState,
+  repoWithOwner, issueNumber, canWrite
+) {
+  const sections = [];
+
+  // ── R&D Section (always shown) ──
+  sections.push(renderRnDSection(itemId, rnd, rndState, repoWithOwner, issueNumber, canWrite));
+
+  // ── Doc Packet Section (always shown) ──
+  sections.push(renderDocPacketSection(itemId, docPacketContent, rndState));
+
+  // ── Documentation Section (shown when rndState = doc-packet-delivered OR link exists) ──
+  if (rndState === 'doc-packet-delivered' || docsLink) {
+    sections.push(renderDocumentationSection(itemId, docsLink, docsRef, docsState, repoWithOwner, issueNumber, canWrite));
+  }
+
+  // ── Red Team Section (shown when docsState = ready-for-review OR tracking exists) ──
+  if (docsState === 'ready-for-review' || redTeamLink) {
+    sections.push(renderRedTeamSection(itemId, redTeamLink, rtRef, redTeamState, repoWithOwner, issueNumber, canWrite));
+  }
+
+  return `<div class="space-y-3">${sections.join('')}</div>`;
+}
+
+function renderRnDSection(itemId, rnd, rndState, repoWithOwner, issueNumber, canWrite) {
+  const color = RND_COLORS[rndState] || '#808C78';
+  const stateLabel = RND_STATE_LABELS[rndState] || rndState;
+
+  let teamHtml, milestoneHtml, dateHtml;
+
+  if (canWrite) {
+    const teamOptions = RND_TEAMS.map(t =>
+      `<option value="${t}" ${rnd.team === t ? 'selected' : ''}>${t}</option>`
+    ).join('');
+    teamHtml = `
+      <select id="rnd-team-${itemId}"
+              class="logos-input text-xs py-0.5 pr-6"
+              style="min-width:8rem;"
+              onchange="window._saveRnDField('${itemId}', '${escapeHtml(repoWithOwner)}', ${issueNumber}, 'team', this.value)">
+        <option value="">— select team —</option>
+        ${teamOptions}
+      </select>`;
+    milestoneHtml = `<span class="flex-1 flex items-center gap-1 min-w-0">
+      <input id="rnd-milestone-${itemId}" type="text"
+             value="${escapeHtml(rnd.milestone || '')}"
+             placeholder="https://roadmap.logos.co/{team}/roadmap/..."
+             data-original="${escapeHtml(rnd.milestone || '')}"
+             class="logos-input text-xs flex-1 min-w-0 py-0.5"
+             onfocus="this.style.borderColor='#E46962'"
+             onblur="this.style.borderColor=''" />
+      <button id="rnd-milestone-save-${itemId}" class="hidden text-xs px-1.5 py-0.5 rounded transition-colors flex-none"
+              style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;"
+              onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">✓</button>
+    </span>`;
+    dateHtml = `<span class="flex items-center gap-1">
+      <input id="rnd-date-${itemId}" type="text"
+             value="${escapeHtml(rnd.date || '')}"
+             placeholder="15Mar26"
+             data-original="${escapeHtml(rnd.date || '')}"
+             class="logos-input text-xs py-0.5"
+             style="width:6rem;"
+             onfocus="this.style.borderColor='#E46962'"
+             onblur="this.style.borderColor=''" />
+      <button id="rnd-date-save-${itemId}" class="hidden text-xs px-1.5 py-0.5 rounded transition-colors"
+              style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;"
+              onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">✓</button>
+    </span>`;
+  } else {
+    teamHtml = rnd.team
+      ? `<span class="text-xs font-medium px-2 py-0.5 rounded"
+             style="background:${teamColor(rnd.team, 0.15)};color:${teamColor(rnd.team, 0.9)};border:1px solid ${teamColor(rnd.team, 0.3)};font-family:Arial,Helvetica,sans-serif;">
+           ${escapeHtml(rnd.team)}
+         </span>`
+      : `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">not set</span>`;
+    milestoneHtml = rnd.milestone
+      ? `<a href="${escapeHtml(rnd.milestone)}" target="_blank" rel="noopener"
+             class="text-xs truncate hover:underline" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
+             onclick="event.stopPropagation()">
+           ${escapeHtml(rnd.milestone.replace(/^https?:\/\//, ''))}
+         </a>`
+      : `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">not set</span>`;
+    dateHtml = rnd.date
+      ? `<span class="text-xs font-medium" style="color:#4E635E;font-family:Arial,Helvetica,sans-serif;">${escapeHtml(rnd.date)}</span>`
+      : `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">not set</span>`;
+  }
+
+  const body = `
+    <div class="space-y-2">
+      ${fieldRow('Team', teamHtml)}
+      ${fieldRow('Milestone', milestoneHtml)}
+      ${fieldRow('Date', dateHtml)}
+    </div>`;
+
+  return sectionCard('R&D', stateBadgeHtml(stateLabel, color), body);
+}
+
+function renderDocPacketSection(itemId, docPacketContent, rndState, canWrite, issueUrl) {
+  const isDelivered = !!docPacketContent;
+
+  let bodyHtml;
+  if (isDelivered) {
+    bodyHtml = `<div class="markdown-body text-sm overflow-x-auto" style="max-height:20rem;overflow-y:auto;">
+      ${renderMarkdown(docPacketContent)}
+    </div>`;
+  } else {
+    bodyHtml = `<p class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">
+      Not yet delivered. R&D team should fill this section in the issue body using the
+      <a href="https://github.com/logos-co/logos-docs/blob/main/docs/_shared/templates/doc-packet-testnet-v01.md"
+         target="_blank" rel="noopener" class="underline" style="color:#3B7CB8;">doc packet template</a>.
+    </p>`;
+  }
+
+  const stateHtml = isDelivered
+    ? stateBadgeHtml('Delivered', '#6AAE7B')
+    : stateBadgeHtml('Waiting for R&D', '#808C78');
+
+  return sectionCard('Doc Packet', stateHtml, bodyHtml);
+}
+
+function renderDocumentationSection(itemId, docsLink, docsRef, docsState, repoWithOwner, issueNumber, canWrite) {
+  const color = DOCS_COLORS[docsState] || '#808C78';
+  const stateLabel = DOCS_STATE_LABELS[docsState] || docsState;
+
+  let linkHtml;
+  if (docsLink) {
+    const title = docsRef?.title || docsLink.replace(/^https?:\/\//, '');
+    linkHtml = `<a href="${escapeHtml(docsLink)}" target="_blank" rel="noopener"
+       class="text-xs truncate hover:underline" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
+       onclick="event.stopPropagation()">
+      ${escapeHtml(title)}
+    </a>`;
+  } else {
+    linkHtml = `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">no link</span>`;
+  }
+
+  let editHtml = '';
+  if (canWrite) {
+    editHtml = `<span class="flex items-center gap-1 mt-2">
+      <input id="docs-link-${itemId}" type="text"
+             value="${escapeHtml(docsLink || '')}"
+             placeholder="https://github.com/logos-co/logos-docs/..."
+             data-original="${escapeHtml(docsLink || '')}"
+             class="logos-input text-xs flex-1 min-w-0 py-0.5"
+             onfocus="this.style.borderColor='#E46962'"
+             onblur="this.style.borderColor=''" />
+      <button id="docs-link-save-${itemId}" class="hidden text-xs px-1.5 py-0.5 rounded transition-colors flex-none"
+              style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;"
+              onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">✓</button>
+    </span>`;
+  }
+
+  const body = `<div class="space-y-1">
+    ${fieldRow('Link', linkHtml)}
+    ${editHtml}
+  </div>`;
+
+  return sectionCard('Documentation', stateBadgeHtml(stateLabel, color), body);
+}
+
+function renderRedTeamSection(itemId, redTeamLink, rtRef, redTeamState, repoWithOwner, issueNumber, canWrite) {
+  const color = REDTEAM_COLORS[redTeamState] || '#808C78';
+  const stateLabel = REDTEAM_STATE_LABELS[redTeamState] || redTeamState;
+
+  let linkHtml;
+  if (redTeamLink) {
+    const title = rtRef?.title || redTeamLink.replace(/^https?:\/\//, '');
+    linkHtml = `<a href="${escapeHtml(redTeamLink)}" target="_blank" rel="noopener"
+       class="text-xs truncate hover:underline" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
+       onclick="event.stopPropagation()">
+      ${escapeHtml(title)}
+    </a>`;
+  } else {
+    linkHtml = `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">no tracking issue</span>`;
+  }
+
+  let editHtml = '';
+  if (canWrite) {
+    editHtml = `<span class="flex items-center gap-1 mt-2">
+      <input id="redteam-link-${itemId}" type="text"
+             value="${escapeHtml(redTeamLink || '')}"
+             placeholder="https://github.com/logos-co/journeys.logos.co/..."
+             data-original="${escapeHtml(redTeamLink || '')}"
+             class="logos-input text-xs flex-1 min-w-0 py-0.5"
+             onfocus="this.style.borderColor='#E46962'"
+             onblur="this.style.borderColor=''" />
+      <button id="redteam-link-save-${itemId}" class="hidden text-xs px-1.5 py-0.5 rounded transition-colors flex-none"
+              style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;"
+              onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">✓</button>
+    </span>`;
+  }
+
+  const body = `<div class="space-y-1">
+    ${fieldRow('Tracking', linkHtml)}
+    ${editHtml}
+  </div>`;
+
+  return sectionCard('Red Team', stateBadgeHtml(stateLabel, color), body);
+}
+
+// ---------------------------------------------------------------------------
+// Inline edit handlers for workflow sections
+// ---------------------------------------------------------------------------
+
+function attachWorkflowHandlers(itemId, repoWithOwner, issueNumber) {
+  // Milestone input: show save button on change
+  const milestoneInput = document.getElementById(`rnd-milestone-${itemId}`);
+  const milestoneSave  = document.getElementById(`rnd-milestone-save-${itemId}`);
+  if (milestoneInput && milestoneSave) {
+    const showSave = () => {
+      if (milestoneInput.value.trim() !== milestoneInput.dataset.original)
+        milestoneSave.classList.remove('hidden');
+      else
+        milestoneSave.classList.add('hidden');
+    };
+    milestoneInput.addEventListener('input', showSave);
+    milestoneInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); milestoneSave.click(); }
+      if (e.key === 'Escape') { milestoneInput.value = milestoneInput.dataset.original; milestoneSave.classList.add('hidden'); milestoneInput.blur(); }
+    });
+    milestoneSave.addEventListener('click', () =>
+      window._saveRnDField(itemId, repoWithOwner, issueNumber, 'milestone', milestoneInput.value.trim())
+    );
+  }
+
+  // Date input: show save button on change
+  const dateInput = document.getElementById(`rnd-date-${itemId}`);
+  const dateSave  = document.getElementById(`rnd-date-save-${itemId}`);
+  if (dateInput && dateSave) {
+    const showSave = () => {
+      if (dateInput.value.trim() !== dateInput.dataset.original)
+        dateSave.classList.remove('hidden');
+      else
+        dateSave.classList.add('hidden');
+    };
+    dateInput.addEventListener('input', showSave);
+    dateInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); dateSave.click(); }
+      if (e.key === 'Escape') { dateInput.value = dateInput.dataset.original; dateSave.classList.add('hidden'); dateInput.blur(); }
+    });
+    dateSave.addEventListener('click', () =>
+      window._saveRnDField(itemId, repoWithOwner, issueNumber, 'date', dateInput.value.trim())
+    );
+  }
+
+  // Docs link input
+  const docsInput = document.getElementById(`docs-link-${itemId}`);
+  const docsSave  = document.getElementById(`docs-link-save-${itemId}`);
+  if (docsInput && docsSave) {
+    const showSave = () => {
+      if (docsInput.value.trim() !== docsInput.dataset.original)
+        docsSave.classList.remove('hidden');
+      else
+        docsSave.classList.add('hidden');
+    };
+    docsInput.addEventListener('input', showSave);
+    docsInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); docsSave.click(); }
+      if (e.key === 'Escape') { docsInput.value = docsInput.dataset.original; docsSave.classList.add('hidden'); docsInput.blur(); }
+    });
+    docsSave.addEventListener('click', () =>
+      window._saveDocLink(itemId, repoWithOwner, issueNumber, docsInput.value.trim())
+    );
+  }
+
+  // Red team tracking input
+  const rtInput = document.getElementById(`redteam-link-${itemId}`);
+  const rtSave  = document.getElementById(`redteam-link-save-${itemId}`);
+  if (rtInput && rtSave) {
+    const showSave = () => {
+      if (rtInput.value.trim() !== rtInput.dataset.original)
+        rtSave.classList.remove('hidden');
+      else
+        rtSave.classList.add('hidden');
+    };
+    rtInput.addEventListener('input', showSave);
+    rtInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); rtSave.click(); }
+      if (e.key === 'Escape') { rtInput.value = rtInput.dataset.original; rtSave.classList.add('hidden'); rtInput.blur(); }
+    });
+    rtSave.addEventListener('click', () =>
+      window._saveRedTeamTracking(itemId, repoWithOwner, issueNumber, rtInput.value.trim())
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -191,74 +649,6 @@ function renderAddLabelButton(item) {
 }
 
 // ---------------------------------------------------------------------------
-// Add dependency
-// ---------------------------------------------------------------------------
-
-function renderAddDepButton(item) {
-  return `
-    <button onclick="window._showAddDepForm('${item.id}')"
-            id="add-dep-btn-${item.id}"
-            class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs text-muted transition-colors"
-            style="border:1px dashed rgba(78,99,94,0.4);font-family:Arial,Helvetica,sans-serif;"
-            onmouseover="this.style.borderColor='rgba(228,105,98,0.5)';this.style.color='#E46962'"
-            onmouseout="this.style.borderColor='rgba(78,99,94,0.4)';this.style.color='#808C78'">
-      <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
-      </svg>
-      Add dependency
-    </button>
-  `;
-}
-
-function renderAddDepForm(item) {
-  const repoWithOwner = escapeHtml(item.content?.repository?.nameWithOwner || '');
-  const issueNumber = item.content?.number || 0;
-  return `
-    <div id="add-dep-form-${item.id}" style="display:none;" class="mb-3 p-4 rounded space-y-3">
-      <div style="background:rgba(255,255,255,0.7);border:1px solid rgba(78,99,94,0.25);border-radius:8px;padding:1rem;">
-        <div class="space-y-3">
-          <div>
-            <label class="block text-xs font-medium text-parchment mb-1" style="font-family:Arial,Helvetica,sans-serif;">
-              Team <span class="text-coral">*</span>
-            </label>
-            <input id="add-dep-team-${item.id}" type="text" placeholder="e.g. docs"
-                   class="logos-input w-full text-sm" />
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-parchment mb-1" style="font-family:Arial,Helvetica,sans-serif;">
-              Reference <span class="text-muted">(optional — GitHub issue URL, other link, or "Completed")</span>
-            </label>
-            <input id="add-dep-url-${item.id}" type="text"
-                   placeholder="URL, &quot;Completed&quot;, or blank for TODO"
-                   class="logos-input w-full text-sm"
-                   oninput="window._autoResolveDepTeam('${item.id}')" />
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-parchment mb-1" style="font-family:Arial,Helvetica,sans-serif;">
-              Target date <span class="text-muted">(optional — DDMMMYY, e.g. 15Mar26)</span>
-            </label>
-            <input id="add-dep-date-${item.id}" type="text"
-                   placeholder="15Mar26"
-                   class="logos-input w-32 text-sm" />
-          </div>
-          <div class="flex items-center gap-2">
-            <button onclick="window._submitAddDep('${item.id}', '${repoWithOwner}', ${issueNumber})"
-                    class="text-sm text-white px-3 py-1.5 rounded transition-colors" style="background:#E46962;font-family:Arial,Helvetica,sans-serif;"
-                    onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">
-              Add
-            </button>
-            <button onclick="window._cancelAddDep('${item.id}')"
-                    class="text-sm text-muted hover:text-parchment transition-colors" style="font-family:Arial,Helvetica,sans-serif;">
-              Cancel
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-// ---------------------------------------------------------------------------
 // Assignees
 // ---------------------------------------------------------------------------
 
@@ -282,239 +672,7 @@ function renderAssignees(issue) {
 }
 
 // ---------------------------------------------------------------------------
-// Dependency loading
-// ---------------------------------------------------------------------------
-
-async function loadDependencies(itemId, item, bodyOverride) {
-  const body = bodyOverride ?? item.content?.body ?? '';
-  const listEl = document.getElementById(`dep-list-${itemId}`);
-  const countEl = document.getElementById(`dep-count-${itemId}`);
-  if (!listEl) return;
-
-  const deps = extractDependencyIssues(body);
-  if (countEl) countEl.textContent = deps.length ? `(${deps.length})` : '';
-
-  if (!deps.length) {
-    listEl.innerHTML = `<p class="text-sm italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">No dependencies listed. ${hasWritePAT() ? 'Use "Add dependency" to track one.' : ''}</p>`;
-    return;
-  }
-
-  // Fetch only GitHub-issue deps (have owner/repo/number, not already completed/pending)
-  const ghDeps = deps.filter(d => d.url && d.owner && !d.completed && !d.pending);
-  const pat = getReadPAT();
-  const refs = ghDeps.map(d => ({ owner: d.owner, repo: d.repo, number: d.number }));
-  const results = ghDeps.length ? await fetchIssuesBatch(refs, pat) : [];
-
-  // Build lookup: "owner/repo#number" → fetched issue
-  const fetchedMap = new Map();
-  ghDeps.forEach((d, i) => {
-    fetchedMap.set(`${d.owner}/${d.repo}#${d.number}`, results[i]);
-  });
-
-  // Build per-team status entries
-  const teamRows = [];
-  for (const dep of deps) {
-    let status, statusColor, issueRef = null;
-    if (dep.completed) {
-      status = 'completed';
-      statusColor = '#6AAE7B';
-      if (dep.url) issueRef = { url: dep.url, label: escapeHtml(dep.url.replace(/^https?:\/\//, '')) };
-    } else if (dep.pending) {
-      status = 'pending';
-      statusColor = '#E46962';
-      if (dep.url) issueRef = { url: dep.url, label: escapeHtml(dep.url.replace(/^https?:\/\//, '')) };
-    } else if (dep.url && dep.owner) {
-      // GitHub issue — fetch state
-      const fetched = fetchedMap.get(`${dep.owner}/${dep.repo}#${dep.number}`);
-      if (fetched?.error) {
-        status = 'error';
-        statusColor = '#E46962';
-        issueRef = { url: dep.url, label: `${dep.owner}/${dep.repo}#${dep.number}` };
-      } else if (fetched?.issue?.state === 'open') {
-        status = 'pending';
-        statusColor = '#E46962';
-        issueRef = { url: fetched.issue.html_url, label: escapeHtml(fetched.issue.title) };
-      } else {
-        status = 'done';
-        statusColor = '#6AAE7B';
-        issueRef = fetched?.issue ? { url: fetched.issue.html_url, label: escapeHtml(fetched.issue.title) } : null;
-      }
-    } else if (dep.url) {
-      // Non-GitHub URL reference
-      status = 'pending';
-      statusColor = '#FA7B17';
-      issueRef = { url: dep.url, label: escapeHtml(dep.url.replace(/^https?:\/\//, '')) };
-    } else if (dep.targetDate) {
-      // No URL, not completed, but has a target date — tracked by deadline
-      status = 'pending';
-      statusColor = '#FA7B17';
-    } else {
-      // No URL, no Completed, no date — truly untracked
-      status = 'not tracked';
-      statusColor = '#808C78';
-    }
-    teamRows.push({ dep, status, statusColor, issueRef });
-  }
-
-  // Sort: pending first, then not-tracked, then done
-  const statusOrder = { pending: 0, error: 0, 'not tracked': 1, done: 2, completed: 2 };
-  teamRows.sort((a, b) => (statusOrder[a.status] ?? 1) - (statusOrder[b.status] ?? 1));
-
-  const canWrite = hasWritePAT();
-  const repoWithOwner = item.content?.repository?.nameWithOwner || '';
-  const issueNumber = item.content?.number || 0;
-
-  listEl.innerHTML = teamRows.map(({ dep, status, statusColor, issueRef }, idx) => {
-    const dateColor = dep.targetDate ? targetDateColor(dep.targetDate) : null;
-    const depId = `${itemId}-dep-${idx}`;
-    let dateHtml;
-    if (canWrite) {
-      const borderColor = dateColor || 'rgba(78,99,94,0.3)';
-      const textColor = dateColor || '#4E635E';
-      dateHtml = `<span class="flex-none inline-flex items-center gap-1">
-        <input id="dep-date-${depId}" type="text" value="${escapeHtml(dep.targetDate || '')}"
-               placeholder="DDMmmYY"
-               data-item-id="${itemId}" data-team="${escapeHtml(dep.team)}"
-               data-repo="${escapeHtml(repoWithOwner)}" data-issue="${issueNumber}"
-               data-original="${escapeHtml(dep.targetDate || '')}"
-               class="dep-date-input text-xs font-medium text-center rounded px-1.5 py-0.5"
-               style="width:5.5rem;border:1px solid ${borderColor};color:${textColor};background:rgba(255,255,255,0.5);font-family:Arial,Helvetica,sans-serif;outline:none;"
-               onfocus="this.style.borderColor='#E46962';this.style.background='rgba(255,255,255,0.9)'"
-               onblur="this.style.borderColor='${borderColor}';this.style.background='rgba(255,255,255,0.5)'" />
-        <button id="dep-date-save-${depId}" class="hidden text-xs px-1.5 py-0.5 rounded transition-colors"
-                style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;"
-                onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">✓</button>
-      </span>`;
-    } else {
-      dateHtml = dep.targetDate
-        ? `<span class="text-xs font-medium flex-none" style="${dateColor ? `color:${dateColor};` : 'color:#808C78;'}font-family:Arial,Helvetica,sans-serif;">${escapeHtml(dep.targetDate)}</span>`
-        : '';
-    }
-    return `
-    <div class="flex items-center gap-3 py-2 px-3 rounded"
-         style="background:rgba(255,255,255,0.6);border:1px solid rgba(78,99,94,0.2);">
-      <span class="text-xs font-semibold px-2 py-0.5 rounded flex-none"
-            style="background:${teamColor(dep.team, 0.15)};color:${teamColor(dep.team, 0.9)};border:1px solid ${teamColor(dep.team, 0.3)};font-family:Arial,Helvetica,sans-serif;">
-        ${escapeHtml(dep.team)}
-      </span>
-      <span class="flex-1 text-xs truncate" style="color:${statusColor};font-family:Arial,Helvetica,sans-serif;">
-        ${issueRef
-          ? `<a href="${issueRef.url}" target="_blank" rel="noopener" class="hover:underline">${issueRef.label}</a>`
-          : '—'}
-      </span>
-      ${dateHtml}
-      <span class="text-xs font-medium flex-none" style="color:${statusColor};font-family:Arial,Helvetica,sans-serif;">${status}</span>
-    </div>`;
-  }).join('');
-
-  // Attach inline date-edit handlers
-  if (canWrite) {
-    listEl.querySelectorAll('.dep-date-input').forEach(input => {
-      const saveBtn = input.parentElement.querySelector('button');
-      const showSave = () => {
-        if (input.value.trim() !== input.dataset.original) saveBtn.classList.remove('hidden');
-        else saveBtn.classList.add('hidden');
-      };
-      input.addEventListener('input', showSave);
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); saveBtn.click(); }
-        if (e.key === 'Escape') { input.value = input.dataset.original; saveBtn.classList.add('hidden'); input.blur(); }
-      });
-      saveBtn.addEventListener('click', () => window._saveDepDate(input));
-    });
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Dep row renderers
-// ---------------------------------------------------------------------------
-
-function renderDepTodo(dep) {
-  return `
-    <div class="flex items-center gap-3 p-3 rounded"
-         style="background:rgba(14,38,24,0.35);border:1px solid rgba(78,99,94,0.2);opacity:0.75;">
-      <svg class="w-4 h-4 text-muted flex-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-        <circle cx="12" cy="12" r="10"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l2.5 2.5"/>
-      </svg>
-      <span class="text-sm text-muted italic flex-1" style="font-family:Arial,Helvetica,sans-serif;">No issue linked yet</span>
-      <span class="text-xs text-muted font-medium" style="font-family:Arial,Helvetica,sans-serif;">not tracked</span>
-    </div>
-  `;
-}
-
-function renderDepIssue(dep, issue) {
-  const isOpen = issue.state === 'open';
-  const assignees = issue.assignees || [];
-  const labels = issue.labels || [];
-
-  return `
-    <div class="flex items-start gap-3 p-3 rounded transition-colors"
-         style="background:rgba(14,38,24,0.5);border:1px solid ${isOpen ? 'rgba(78,99,94,0.35)' : 'rgba(78,99,94,0.2)'};${!isOpen ? 'opacity:0.7;' : ''}"
-         onmouseover="this.style.borderColor='rgba(78,99,94,0.6)'" onmouseout="this.style.borderColor='${isOpen ? 'rgba(78,99,94,0.35)' : 'rgba(78,99,94,0.2)'}'">
-      <div class="flex-none pt-0.5">
-        ${isOpen
-          ? `<svg class="w-4 h-4 text-coral" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3"/></svg>`
-          : `<svg class="w-4 h-4 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>`
-        }
-      </div>
-      <div class="flex-1 min-w-0">
-        <div class="flex items-start justify-between gap-2">
-          <div class="min-w-0">
-            <a href="${issue.html_url}" target="_blank" rel="noopener"
-               class="text-sm font-medium text-parchment transition-colors leading-snug block truncate" style="font-family:'Times New Roman',Times,serif;"
-               onmouseover="this.style.color='#E46962'" onmouseout="this.style.color='#E2E0C9'">
-              ${escapeHtml(issue.title)}
-            </a>
-            <div class="text-xs text-muted mt-0.5" style="font-family:Arial,Helvetica,sans-serif;">
-              ${dep.owner}/${dep.repo}#${dep.number}
-            </div>
-          </div>
-          ${assignees.length ? `
-            <div class="flex-none flex items-center gap-1">
-              ${assignees.slice(0, 3).map(a => `
-                <img src="${a.avatar_url}&s=20" alt="${escapeHtml(a.login)}" title="${escapeHtml(a.login)}"
-                     class="w-5 h-5 rounded-full" style="border:1px solid rgba(78,99,94,0.5);" />
-              `).join('')}
-            </div>
-          ` : ''}
-        </div>
-        ${labels.length ? `
-          <div class="flex flex-wrap gap-1.5 mt-2">
-            ${labels.map(l => `
-              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium"
-                    style="background:#${l.color}22;color:#${l.color};border:1px solid #${l.color}44;font-family:Arial,Helvetica,sans-serif;">
-                ${escapeHtml(l.name)}
-              </span>
-            `).join('')}
-          </div>
-        ` : ''}
-      </div>
-      <div class="flex-none text-xs font-medium pt-0.5" style="color:${isOpen ? '#E46962' : '#808C78'};font-family:Arial,Helvetica,sans-serif;">
-        ${isOpen ? 'pending' : 'done'}
-      </div>
-    </div>
-  `;
-}
-
-function renderDepError(dep, error) {
-  return `
-    <div class="flex items-center gap-3 p-3 rounded opacity-60"
-         style="background:rgba(14,38,24,0.4);border:1px solid rgba(78,99,94,0.25);">
-      <svg class="w-4 h-4 text-coral flex-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
-      </svg>
-      <div class="flex-1 min-w-0">
-        <div class="text-sm text-parchment" style="font-family:'Times New Roman',Times,serif;">${dep.owner}/${dep.repo}#${dep.number}</div>
-        <div class="text-xs mt-0.5" style="color:#E46962;font-family:Arial,Helvetica,sans-serif;">${escapeHtml(error.message)}</div>
-      </div>
-      <a href="https://github.com/${dep.owner}/${dep.repo}/issues/${dep.number}" target="_blank" rel="noopener"
-         class="text-xs text-muted hover:text-parchment transition-colors" style="font-family:Arial,Helvetica,sans-serif;">View →</a>
-    </div>
-  `;
-}
-
-// ---------------------------------------------------------------------------
-// Global handlers (called from onclick attributes in rendered HTML)
+// Global handlers
 // ---------------------------------------------------------------------------
 
 export function registerLabelHandlers() {
@@ -587,134 +745,85 @@ export function registerLabelHandlers() {
     }
   };
 
-  // -- Add dependency: show form --
-  window._showAddDepForm = (itemId) => {
-    document.getElementById(`add-dep-btn-${itemId}`)?.style.setProperty('display', 'none');
-    const form = document.getElementById(`add-dep-form-${itemId}`);
-    if (form) form.style.display = 'block';
-    document.getElementById(`add-dep-team-${itemId}`)?.focus();
-  };
-
-  window._cancelAddDep = (itemId) => {
-    const btn = document.getElementById(`add-dep-btn-${itemId}`);
-    const form = document.getElementById(`add-dep-form-${itemId}`);
-    if (btn) btn.style.display = '';
-    if (form) form.style.display = 'none';
-    const teamInput = document.getElementById(`add-dep-team-${itemId}`);
-    const urlInput  = document.getElementById(`add-dep-url-${itemId}`);
-    const dateInput = document.getElementById(`add-dep-date-${itemId}`);
-    if (teamInput) teamInput.value = '';
-    if (urlInput)  urlInput.value  = '';
-    if (dateInput) dateInput.value = '';
-  };
-
-  // -- Add dependency: auto-resolve team from URL --
-  window._autoResolveDepTeam = (itemId) => {
-    const urlInput  = document.getElementById(`add-dep-url-${itemId}`);
-    const teamInput = document.getElementById(`add-dep-team-${itemId}`);
-    if (!urlInput || !teamInput || teamInput.value.trim()) return;
-    const m = urlInput.value.match(/https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/issues\/\d+/);
-    if (m) {
-      const resolved = REPO_TEAMS[`${m[1]}/${m[2]}`];
-      if (resolved) teamInput.value = resolved;
-    }
-  };
-
-  // -- Add dependency: submit --
-  window._submitAddDep = async (itemId, repoWithOwner, issueNumber) => {
-    const team = document.getElementById(`add-dep-team-${itemId}`)?.value.trim();
-    const url  = document.getElementById(`add-dep-url-${itemId}`)?.value.trim() || '';
-    const date = document.getElementById(`add-dep-date-${itemId}`)?.value.trim() || '';
-
-    if (!team) { showToast('error', 'Team name is required'); return; }
-
-    if (url && url.toUpperCase() !== 'COMPLETED') {
-      const validUrl = /^https?:\/\/\S+$/.test(url);
-      if (!validUrl) { showToast('error', 'Invalid URL'); return; }
-    }
-
-    if (date && !/^\d{2}(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\d{2}$/i.test(date)) {
-      showToast('error', 'Invalid date format — use DDMMMYY (e.g. 15Mar26)');
-      return;
-    }
-
-    const pat = getWritePAT();
-    if (!pat) { showToast('error', 'Write token required'); return; }
-
-    const [owner, repo] = (repoWithOwner || '').split('/');
-    if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue repository'); return; }
-
-    try {
-      // Use locally cached body so rapid successive adds don't overwrite each other.
-      // The cache is updated after each successful mutation (below), so it always
-      // reflects the latest state even before GitHub propagates the change.
-      const item = itemRegistry.get(itemId);
-      const currentBody = item?.content?.body ?? (await fetchIssue(owner, repo, issueNumber, pat)).body ?? '';
-      const ref = url.toUpperCase() === 'COMPLETED' ? 'Completed' : (url || null);
-      const newBody = addDepToBody(currentBody, team, ref, date || null);
-      await updateIssueBody(owner, repo, issueNumber, newBody, pat);
-
-      // Update cached body
-      if (item?.content) item.content.body = newBody;
-
-      showToast('success', `Added dependency: ${team}`);
-      window._cancelAddDep(itemId);
-      const itemOrFallback = item || { content: { body: newBody } };
-      await loadDependencies(itemId, itemOrFallback);
-      refreshRowDepBadges(itemId, itemOrFallback);
-    } catch (err) {
-      showToast('error', `Failed to add dependency: ${err.message}`);
-    }
-  };
-
-  // -- Inline dep date save --
-  window._saveDepDate = async (input) => {
-    const itemId = input.dataset.itemId;
-    const team = input.dataset.team;
-    const repoWithOwner = input.dataset.repo;
-    const issueNum = parseInt(input.dataset.issue || '0', 10);
-    const newDate = input.value.trim();
-
-    if (newDate && !/^\d{2}(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\d{2}$/i.test(newDate)) {
+  // -- R&D field save (team / milestone / date) --
+  window._saveRnDField = async (itemId, repoWithOwner, issueNumber, field, value) => {
+    if (field === 'date' && value && !/^\d{2}(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\d{2}$/i.test(value)) {
       showToast('error', 'Invalid date — use DDMMMYY (e.g. 15Mar26)');
       return;
     }
+    if (field === 'milestone' && value && !/^https?:\/\/\S+$/.test(value)) {
+      showToast('error', 'Invalid URL');
+      return;
+    }
 
     const pat = getWritePAT();
     if (!pat) { showToast('error', 'Write token required'); return; }
 
     const [owner, repo] = (repoWithOwner || '').split('/');
-    if (!owner || !repo || !issueNum) { showToast('error', 'Could not determine issue'); return; }
-
-    input.disabled = true;
-    const saveBtn = input.parentElement.querySelector('button');
-    if (saveBtn) saveBtn.disabled = true;
+    if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
 
     try {
       const item = itemRegistry.get(itemId);
-      const currentBody = item?.content?.body ?? (await fetchIssue(owner, repo, issueNum, pat)).body ?? '';
-      const newBody = setDepDate(currentBody, team, newDate || null);
-      await updateIssueBody(owner, repo, issueNum, newBody, pat);
-
+      const currentBody = item?.content?.body ?? (await fetchIssue(owner, repo, issueNumber, pat)).body ?? '';
+      const newBody = setRnDField(currentBody, field, value || null);
+      await updateIssueBody(owner, repo, issueNumber, newBody, pat);
       if (item?.content) item.content.body = newBody;
-      input.dataset.original = newDate;
-      if (saveBtn) saveBtn.classList.add('hidden');
-
-      // Update date color
-      const dateColor = newDate ? targetDateColor(newDate) : null;
-      input.style.color = dateColor || '#4E635E';
-      input.style.borderColor = dateColor || 'rgba(78,99,94,0.3)';
-
-      showToast('success', newDate ? `Set ${team} date to ${newDate}` : `Cleared ${team} date`);
-
-      // Refresh pipeline row badges
-      const itemOrFallback = item || { content: { body: newBody } };
-      refreshRowDepBadges(itemId, itemOrFallback);
+      showToast('success', `Saved R&D ${field}`);
+      await loadWorkflowSections(itemId, item || { content: { body: newBody, repository: { nameWithOwner: repoWithOwner }, number: issueNumber, labels: { nodes: [] } } }, newBody);
     } catch (err) {
-      showToast('error', `Failed to save date: ${err.message}`);
-    } finally {
-      input.disabled = false;
-      if (saveBtn) saveBtn.disabled = false;
+      showToast('error', `Failed to save: ${err.message}`);
+    }
+  };
+
+  // -- Documentation link save --
+  window._saveDocLink = async (itemId, repoWithOwner, issueNumber, value) => {
+    if (value && !/^https?:\/\/\S+$/.test(value)) {
+      showToast('error', 'Invalid URL');
+      return;
+    }
+
+    const pat = getWritePAT();
+    if (!pat) { showToast('error', 'Write token required'); return; }
+
+    const [owner, repo] = (repoWithOwner || '').split('/');
+    if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
+
+    try {
+      const item = itemRegistry.get(itemId);
+      const currentBody = item?.content?.body ?? (await fetchIssue(owner, repo, issueNumber, pat)).body ?? '';
+      const newBody = setDocLink(currentBody, value || null);
+      await updateIssueBody(owner, repo, issueNumber, newBody, pat);
+      if (item?.content) item.content.body = newBody;
+      showToast('success', 'Saved documentation link');
+      await loadWorkflowSections(itemId, item || { content: { body: newBody, repository: { nameWithOwner: repoWithOwner }, number: issueNumber, labels: { nodes: [] } } }, newBody);
+    } catch (err) {
+      showToast('error', `Failed to save: ${err.message}`);
+    }
+  };
+
+  // -- Red team tracking save --
+  window._saveRedTeamTracking = async (itemId, repoWithOwner, issueNumber, value) => {
+    if (value && !/^https?:\/\/\S+$/.test(value)) {
+      showToast('error', 'Invalid URL');
+      return;
+    }
+
+    const pat = getWritePAT();
+    if (!pat) { showToast('error', 'Write token required'); return; }
+
+    const [owner, repo] = (repoWithOwner || '').split('/');
+    if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
+
+    try {
+      const item = itemRegistry.get(itemId);
+      const currentBody = item?.content?.body ?? (await fetchIssue(owner, repo, issueNumber, pat)).body ?? '';
+      const newBody = setRedTeamTracking(currentBody, value || null);
+      await updateIssueBody(owner, repo, issueNumber, newBody, pat);
+      if (item?.content) item.content.body = newBody;
+      showToast('success', 'Saved red team tracking');
+      await loadWorkflowSections(itemId, item || { content: { body: newBody, repository: { nameWithOwner: repoWithOwner }, number: issueNumber, labels: { nodes: [] } } }, newBody);
+    } catch (err) {
+      showToast('error', `Failed to save: ${err.message}`);
     }
   };
 }
@@ -726,130 +835,52 @@ export function registerLabelHandlers() {
 async function refreshBlockedLabels(itemId, owner, repo, issueNumber, pat) {
   try {
     const freshIssue = await fetchIssue(owner, repo, issueNumber, pat);
-    const blockedLabels = (freshIssue.labels || [])
-      .filter(l => /^blocked:/i.test(l.name))
-      .map(l => ({ name: l.name, team: l.name.replace(/^blocked:/i, '').trim(), color: l.color }));
+    const blockedLabels = extractAllBlockedLabels((freshIssue.labels || []).map(l => l.name));
 
     const container = document.getElementById(`blocked-labels-${itemId}`);
     if (!container) return;
 
     const canWrite = hasWritePAT();
     const fakeItem = { id: itemId, content: { repository: { nameWithOwner: `${owner}/${repo}` }, number: issueNumber } };
-    container.innerHTML =
-      renderBlockedLabels(blockedLabels, fakeItem, canWrite) +
+    container.innerHTML = renderBlockedLabels(blockedLabels, fakeItem, canWrite) +
       (canWrite ? renderAddLabelButton(fakeItem) : '');
-
-    // Update row badge
-    const row = document.querySelector(`[data-item-id="${itemId}"]`);
-    if (row) {
-      const badge = row.querySelector('[data-team-badge]');
-      if (badge) {
-        const newTeam = blockedLabels[0]?.team || null;
-        if (newTeam) {
-          badge.textContent = newTeam;
-          badge.style.background = teamColor(newTeam, 0.15);
-          badge.style.borderColor = teamColor(newTeam, 0.4);
-          badge.style.color = teamColor(newTeam, 1);
-        } else {
-          badge.textContent = 'none';
-          badge.style.background = 'rgba(12,43,45,0.5)';
-          badge.style.borderColor = 'rgba(78,99,94,0.3)';
-          badge.style.color = '#808C78';
-        }
-      }
-    }
   } catch (err) {
     console.warn('Failed to refresh labels:', err);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Refresh row dep badges after a mutation (e.g. Add dependency)
-// ---------------------------------------------------------------------------
-
-async function refreshRowDepBadges(itemId, item) {
-  const body = item.content?.body || '';
-  const deps = extractDependencyIssues(body);
+async function refreshRowStakeholderBadges(itemId, item, body, docsRef, rtRef) {
+  const rnd            = extractRnD(body);
+  const docPacketContent = extractDocPacket(body);
+  const { link: docsLink }       = extractDocumentation(body);
+  const { tracking: redTeamLink } = extractRedTeam(body);
   const pat = getReadPAT();
 
-  const ghDeps        = deps.filter(d => d.url && d.owner && !d.completed && !d.pending);
-  const refDeps       = deps.filter(d => d.url && !d.owner && !d.completed && !d.pending);
-  const doneDeps      = deps.filter(d => d.completed);
-  const dateDeps      = deps.filter(d => !d.url && !d.completed && !d.pending && d.targetDate);
-  const pendingKwDeps = deps.filter(d => d.pending && !d.completed);
-  const todoDeps      = deps.filter(d => !d.url && !d.completed && !d.pending && !d.targetDate);
-  const refs = ghDeps.map(d => ({ owner: d.owner, repo: d.repo, number: d.number }));
-  const results = refs.length ? await fetchIssuesBatch(refs, pat) : [];
+  const [freshDocsRef, freshRtRef] = await Promise.all([
+    docsLink    ? fetchRef(docsLink,    pat) : Promise.resolve(null),
+    redTeamLink ? fetchRef(redTeamLink, pat) : Promise.resolve(null),
+  ]);
 
-  const teamCounts = new Map();
-  const ensure = (team) => {
-    if (!teamCounts.has(team)) teamCounts.set(team, { notTracked: 0, pending: 0, pendingKw: 0, done: 0, url: null, targetDate: null });
-    return teamCounts.get(team);
-  };
-  for (const dep of todoDeps) {
-    const c = ensure(dep.team);
-    c.notTracked++;
-  }
-  for (const dep of doneDeps) {
-    const c = ensure(dep.team);
-    c.done++;
-    if (!c.url && dep.url) c.url = dep.url;
-    if (dep.targetDate && !c.targetDate) c.targetDate = dep.targetDate;
-  }
-  for (const dep of dateDeps) {
-    const c = ensure(dep.team);
-    c.pending++;
-    if (dep.targetDate && !c.targetDate) c.targetDate = dep.targetDate;
-  }
-  for (const dep of refDeps) {
-    const c = ensure(dep.team);
-    if (!c.url) c.url = dep.url;
-    if (dep.targetDate && !c.targetDate) c.targetDate = dep.targetDate;
-    c.pending++;
-  }
-  for (const dep of pendingKwDeps) {
-    const c = ensure(dep.team);
-    if (dep.url && !c.url) c.url = dep.url;
-    if (dep.targetDate && !c.targetDate) c.targetDate = dep.targetDate;
-    c.pending++;
-    c.pendingKw++;
-  }
-  for (let i = 0; i < ghDeps.length; i++) {
-    const dep = ghDeps[i];
-    const result = results[i];
-    const counts = ensure(dep.team);
-    if (!counts.url) counts.url = dep.url;
-    if (dep.targetDate && !counts.targetDate) counts.targetDate = dep.targetDate;
-    if (result?.error || result?.issue?.state === 'open') counts.pending++;
-    else counts.done++;
-  }
+  const rndState     = computeRnDState(rnd, docPacketContent);
+  const docsState    = computeDocsState(docsLink, freshDocsRef);
+  const redTeamState = computeRedTeamState(redTeamLink, freshRtRef);
+
+  const labels = (item.content?.labels?.nodes || []).map(l => l.name);
+  const actionLabels = labels.filter(l => l.startsWith('action:'));
+  const expectedActions = computeActionLabels(rndState, docsState, redTeamState);
+  const mismatch = JSON.stringify([...actionLabels].sort()) !== JSON.stringify([...expectedActions].sort());
 
   const el = document.getElementById(`pending-${itemId}`);
-  if (!el) return;
+  if (el) {
+    el.innerHTML = renderStakeholderBadges(
+      rnd.team, rndState, docsLink, docsState, redTeamLink, redTeamState,
+      actionLabels, mismatch
+    );
+  }
 
-  el.innerHTML = [...teamCounts.entries()].map(([team, { notTracked, pending, pendingKw, done, url, targetDate }]) => {
-    let statusText;
-    if (pending > 0) statusText = 'pending';
-    else if (notTracked > 0) statusText = 'not tracked';
-    else statusText = 'done';
-
-    const color = statusText === 'pending' ? '#FA7B17' : statusText === 'not tracked' ? '#E46962' : '#6AAE7B';
-    const indicator = statusText === 'not tracked'
-      ? `<span style="color:#FA7B17;font-size:11px;line-height:1;flex-shrink:0;">⚠</span>`
-      : `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;"></span>`;
-    const dateColor = targetDate ? targetDateColor(targetDate) : null;
-    const dateHtml = targetDate
-      ? `<span style="font-size:10px;${dateColor ? `color:${dateColor};font-weight:600;` : 'color:#808C78;'}">${escapeHtml(targetDate)}</span>`
-      : '';
-    const tag = url ? 'a' : 'span';
-    const linkAttrs = url ? `href="${escapeHtml(url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"` : '';
-    return `<${tag} ${linkAttrs} title="${escapeHtml(team)}: ${statusText}${targetDate ? ' — due ' + targetDate : ''}"
-              class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs transition-colors"
-              style="background:rgba(255,255,255,0.7);border:1px solid rgba(78,99,94,0.25);font-family:Arial,Helvetica,sans-serif;color:#4E635E;white-space:nowrap;${url ? 'cursor:pointer;text-decoration:none;' : ''}"
-              ${url ? `onmouseover="this.style.background='rgba(78,99,94,0.1)'" onmouseout="this.style.background='rgba(255,255,255,0.7)'"` : ''}>
-          ${indicator} ${escapeHtml(team)} ${dateHtml}
-        </${tag}>`;
-  }).join('');
+  // Update filter wrapper
+  const wrapper = document.getElementById(`filter-item-${itemId}`);
+  if (wrapper) wrapper.dataset.actionLabels = JSON.stringify(actionLabels);
 }
 
 function escapeHtml(str) {

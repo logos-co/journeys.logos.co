@@ -336,6 +336,34 @@ export async function listRepoLabels(owner, repo, pat = '') {
 }
 
 /**
+ * Create a label in a repo. No-ops silently if the label already exists (HTTP 422).
+ * @param {string} owner
+ * @param {string} repo
+ * @param {string} name
+ * @param {string} color - 6-char hex without '#'
+ * @param {string} pat
+ */
+export async function createLabel(owner, repo, name, color, pat) {
+  const headers = {
+    'Accept': 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    'Content-Type': 'application/json',
+  };
+  if (pat) headers['Authorization'] = `bearer ${pat}`;
+  const response = await fetch(`${REST_BASE}/repos/${owner}/${repo}/labels`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ name, color }),
+  });
+  if (response.status === 422) return; // already exists
+  if (!response.ok) {
+    const json = await response.json().catch(() => ({}));
+    throw new Error(json.message || `HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+/**
  * Update an issue's body.
  * @param {string} owner
  * @param {string} repo
@@ -349,4 +377,106 @@ export async function updateIssueBody(owner, repo, issueNumber, body, pat) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ body }),
   }, pat);
+}
+
+/**
+ * Update an issue's title.
+ */
+export async function updateIssueTitle(owner, repo, issueNumber, title, pat) {
+  return restRequest(`/repos/${owner}/${repo}/issues/${issueNumber}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  }, pat);
+}
+
+/**
+ * Replace the full label set on an issue.
+ */
+export async function setIssueLabels(owner, repo, issueNumber, labels, pat) {
+  return restRequest(`/repos/${owner}/${repo}/issues/${issueNumber}/labels`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ labels }),
+  }, pat);
+}
+
+/**
+ * Create a new GitHub issue.
+ */
+export async function createIssue(owner, repo, title, body, labels, pat) {
+  return restRequest(`/repos/${owner}/${repo}/issues`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, body, labels }),
+  }, pat);
+}
+
+/**
+ * Add an issue to a GitHub Projects V2 board.
+ */
+export async function addItemToProject(projectId, contentId, pat) {
+  return graphql(`
+    mutation AddItemToProject($projectId: ID!, $contentId: ID!) {
+      addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+        item { id }
+      }
+    }
+  `, { projectId, contentId }, pat);
+}
+
+/**
+ * Fetch a GitHub URL — issue, PR, or non-GitHub URL — and return its type + state.
+ * Non-GitHub URLs are treated as live docs (state: 'merged').
+ */
+export async function fetchRef(url, pat = '') {
+  const prM   = url.match(/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/);
+  const issueM = url.match(/github\.com\/([\w.-]+)\/([\w.-]+)\/issues\/(\d+)/);
+  if (!prM && !issueM) return { type: 'url', state: 'merged', title: null, html_url: url };
+
+  try {
+    if (prM) {
+      const [, owner, repo, number] = prM;
+      const pr = await restRequest(`/repos/${owner}/${repo}/pulls/${number}`, {}, pat);
+      const state = pr.merged_at ? 'merged' : pr.state;
+      return { type: 'pr', state, title: pr.title, html_url: pr.html_url };
+    }
+    const [, owner, repo, number] = issueM;
+    const issue = await restRequest(`/repos/${owner}/${repo}/issues/${number}`, {}, pat);
+    return { type: 'issue', state: issue.state, title: issue.title, html_url: issue.html_url };
+  } catch (err) {
+    return { type: prM ? 'pr' : 'issue', state: 'error', title: null, html_url: url, error: err.message };
+  }
+}
+
+/**
+ * Batch-fetch multiple refs (issues/PRs/URLs) with concurrency limit.
+ */
+export async function fetchRefsBatch(urls, pat = '') {
+  const CONCURRENCY = 6;
+  const results = [];
+  for (let i = 0; i < urls.length; i += CONCURRENCY) {
+    const batch = urls.slice(i, i + CONCURRENCY);
+    const settled = await Promise.allSettled(batch.map(url => fetchRef(url, pat)));
+    for (const s of settled) {
+      results.push(s.status === 'fulfilled' ? s.value : { type: 'error', state: 'error', title: null });
+    }
+  }
+  return results;
+}
+
+/**
+ * Sync action:* labels on an issue to match the desired set.
+ * Returns { added, removed } arrays.
+ */
+export async function syncActionLabels(owner, repo, issueNum, currentLabels, desiredActionLabels, pat) {
+  const ACTION_SET = ['action:rnd', 'action:docs', 'action:red-team'];
+  const currentAction = currentLabels.filter(l => ACTION_SET.includes(l));
+  const toAdd    = desiredActionLabels.filter(l => !currentAction.includes(l));
+  const toRemove = currentAction.filter(l => !desiredActionLabels.includes(l));
+  await Promise.all([
+    ...(toAdd.length ? [addLabels(owner, repo, issueNum, toAdd, pat)] : []),
+    ...toRemove.map(l => removeLabel(owner, repo, issueNum, l, pat)),
+  ]);
+  return { added: toAdd, removed: toRemove };
 }

@@ -32,37 +32,66 @@ Journeys are GitHub issues in the connected project board. Each issue has:
 - **Labels** for journey type: `gui user`, `developer`, `node operator`
 - **Labels** for target release: `testnet v0.1`, `testnet v0.2`, etc. (regex: `/^testnet\b/i`)
 - **Labels** for blocked status: `blocked:teamname` (regex: `/^blocked:/i`)
-- **Issue body** with structured sections:
-  - `## Dependencies` — lines like `- team: URL [Completed] [DDMMMYY]`. URL can be a GitHub issue (auto-tracked) or any reference link. Value can also be `TODO`, `Completed`, or empty. Examples: `- team: https://github.com/o/r/issues/1`, `- team: Completed`, `- team: TODO 15Mar26`, `- team: https://example.com Completed 30Jun26`
-  - `## Documentation` — bare URL to docs
+- **Labels** for action required: `action:rnd`, `action:docs`, `action:red-team` — auto-managed by the app
+- **Issue body** with structured sections (3-stakeholder workflow):
+  - `## R&D` — fields: `- team: <name>`, `- milestone: <url>`, `- date: <DDMmmYY>`
+  - `## Doc Packet` — R&D team fills this with the [doc packet template](https://github.com/logos-co/logos-docs/blob/main/docs/_shared/templates/doc-packet-testnet-v01.md) when ready; presence of content (>150 chars) = delivered. Placeholder text `_Fill in using the [doc packet template](...)._` is pre-filled by the migration script and does not count as delivered.
+  - `## Documentation` — field: `- link: <url>` pointing to logos-docs issue → PR → live doc
+  - `## Red Team` — field: `- tracking: <url>` pointing to red team tracking issue
+
+### 3-Stakeholder State Machine
+
+```
+R&D: to-be-confirmed → confirmed → in-progress → doc-packet-delivered
+Docs: waiting → in-progress → ready-for-review → merged
+Red Team: waiting → in-progress → done
+```
+
+Action label rules (auto-computed):
+- `action:rnd` when R&D ≠ doc-packet-delivered OR docs = ready-for-review
+- `action:docs` when R&D = doc-packet-delivered AND docs ≠ merged
+- `action:red-team` when docs = ready-for-review AND red team ≠ done
 
 ## GitHub Repos
 
-- `logos-co/ecosystem` — Journey issues live here
-- `logos-co/logos-docs` — Documentation, linked from dependency sections
+- `logos-co/journeys.logos.co` — Journey issues live here
+- `logos-co/logos-docs` — Documentation, linked from `## Documentation` section
 - `logos-blockchain/logos-execution-zone` — LEZ team issues
+- `logos-co/ecosystem` — Red team tracking issues (historical; may move)
 
 ## Creating Journey Issues
 
 To create a new journey via `gh`:
 
 ```bash
-gh issue create --repo logos-co/ecosystem \
+gh issue create --repo logos-co/journeys.logos.co \
   --title "Journey title" \
   --label "developer" \
-  --body '## Dependencies
-- lez: TODO
-- docs: TODO
-- red team: TODO'
+  --label "testnet v0.1" \
+  --label "action:rnd" \
+  --body '## R&D
+- team: lez
+- milestone:
+- date:
+
+## Doc Packet
+
+## Documentation
+- link:
+
+## Red Team
+- tracking:'
 ```
 
-Always include `red team` and `docs` dependencies. Other dependencies to be added as per user's request.
-Do ask if they don't ask for any other dependencies.
-They should also specific a target testnet and a type of journey. Request clarification if they don't.
-
+R&D team options: `anon-comms`, `messaging`, `core`, `storage`, `blockchain`, `lez`, `devkit`.
+Always include a target testnet label and a journey type label. Request clarification if missing.
 After creating, add the issue to the GitHub Project board for it to appear in the app.
 
 Journey type label colors: gui user=`D94F45`, developer=`3B7CB8`, node operator=`C4912C`.
+
+## Migration
+
+All issues have been migrated from the old `## Dependencies` format to the 3-stakeholder format. The migration script is at `scripts/migrate-issues.sh` and is idempotent (skips already-migrated issues). The old `deps-*` labels have been deleted from the repo.
 
 ## Branding
 

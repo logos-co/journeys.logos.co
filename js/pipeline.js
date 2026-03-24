@@ -2,41 +2,55 @@
  * pipeline.js — Pipeline view rendering
  */
 
-import { extractBlockedTeam, extractDependencyIssues, extractDocUrl, targetDateColor } from './markdown.js';
+import {
+  extractBlockedTeam, extractDocumentation,
+  extractRnD, extractDocPacket, extractRedTeam,
+  computeRnDState, computeDocsState, computeRedTeamState, computeActionLabels,
+  newIssueBody,
+} from './markdown.js';
 import { toggleDetail, expandAll, collapseAll, getOpenCount } from './detail.js';
-import { hasWritePAT, getReadPAT } from './config.js';
-import { teamColor, statusBadge } from './app.js';
-import { fetchIssuesBatch } from './api.js';
+import { hasWritePAT, getReadPAT, getWritePAT, getConfig } from './config.js';
+import { teamColor, statusBadge, showToast } from './app.js';
+import { fetchRefsBatch, createIssue, addItemToProject, createLabel } from './api.js';
 
-// Active team filter — persists until project reload
-let activeTeamFilter = new Set();
+// Active state filter — persists until project reload
+let activeStateFilter = null; // null | 'action:rnd' | 'action:docs' | 'action:red-team'
 
-export function renderPipeline(container, items, projectTitle) {
-  const canDrag = hasWritePAT();
+// Project context (set during renderPipeline, used for create)
+let _projectId = null;
+let _projectOwner = null;
+let _projectRepo = null;
+
+export function renderPipeline(container, items, projectTitle, projectId) {
+  const canDrag  = hasWritePAT();
+  const canWrite = hasWritePAT();
+  _projectId = projectId || null;
+
+  // Derive owner/repo from first item
+  const firstRepo = items.find(i => i.content?.repository)?.content?.repository?.nameWithOwner || '';
+  const [owner, repo] = firstRepo.split('/');
+  _projectOwner = owner || null;
+  _projectRepo  = repo || null;
 
   // Reset filter on each full project render
-  activeTeamFilter.clear();
+  activeStateFilter = null;
 
-  // Split into open and closed; closed sorted by most recently closed first
-  const openItems = items.filter(i => i.content?.state !== 'CLOSED');
+  const openItems   = items.filter(i => i.content?.state !== 'CLOSED');
   const closedItems = items
     .filter(i => i.content?.state === 'CLOSED')
     .sort((a, b) => (b.content.closedAt || '').localeCompare(a.content.closedAt || ''));
 
-  // Collect unique team names across all items (from dep lines in body)
-  const allTeams = collectAllTeams(items);
-
   const columnHeader = `
-        <div class="hidden md:block pointer-events-none select-none">
-          <div class="grid grid-cols-[1fr_8rem_9rem_10rem_2rem] gap-4 items-end px-4 py-1.5 text-xs font-semibold uppercase tracking-wider"
-               style="color:#808C78;font-family:Arial,Helvetica,sans-serif;border:1px solid transparent;border-left:3px solid transparent;border-bottom:1px solid rgba(78,99,94,0.2);">
-            <div>Journey</div>
-            <div>Journey<br>Type</div>
-            <div>Target<br>Release</div>
-            <div>Deps</div>
-            <div></div>
-          </div>
-        </div>`;
+    <div class="hidden md:block pointer-events-none select-none">
+      <div class="grid grid-cols-[1fr_8rem_9rem_14rem_2rem] gap-4 items-end px-4 py-1.5 text-xs font-semibold uppercase tracking-wider"
+           style="color:#808C78;font-family:Arial,Helvetica,sans-serif;border:1px solid transparent;border-left:3px solid transparent;border-bottom:1px solid rgba(78,99,94,0.2);">
+        <div>Journey</div>
+        <div>Journey<br>Type</div>
+        <div>Target<br>Release</div>
+        <div>Progress</div>
+        <div></div>
+      </div>
+    </div>`;
 
   container.innerHTML = `
     <div class="max-w-5xl mx-auto space-y-4">
@@ -48,7 +62,19 @@ export function renderPipeline(container, items, projectTitle) {
             ${canDrag ? '<span class="ml-2 text-xs text-coral font-medium">· Drag rows to reorder</span>' : ''}
           </p>
         </div>
-        <div class="flex items-center gap-4">
+        <div class="flex items-center gap-3">
+          ${canWrite ? `
+            <button id="btn-new-journey"
+                    class="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded transition-colors"
+                    style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;border:1px solid #E46962;"
+                    onmouseover="this.style.background='#FA7B17';this.style.borderColor='#FA7B17'"
+                    onmouseout="this.style.background='#E46962';this.style.borderColor='#E46962'">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              New Journey
+            </button>
+          ` : ''}
           <button id="btn-toggle-all" class="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded transition-colors"
                   style="color:#808C78;border:1px solid rgba(78,99,94,0.3);font-family:Arial,Helvetica,sans-serif;"
                   onmouseover="this.style.background='rgba(78,99,94,0.1)'"
@@ -58,15 +84,10 @@ export function renderPipeline(container, items, projectTitle) {
             </svg>
             <span id="toggle-all-label">Expand All</span>
           </button>
-          <div class="hidden md:flex items-center gap-3 text-xs" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">
-            <span class="flex items-center gap-1"><span style="color:#FA7B17;font-size:11px;line-height:1;flex-shrink:0;">⚠</span>not tracked</span>
-            <span class="flex items-center gap-1"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#FA7B17;flex-shrink:0;"></span>open</span>
-            <span class="flex items-center gap-1"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#6AAE7B;flex-shrink:0;"></span>done</span>
-          </div>
         </div>
       </div>
 
-      ${allTeams.length > 0 ? renderFilterBar(allTeams) : ''}
+      ${renderFilterBar()}
 
       <div id="pipeline-list" class="space-y-1.5">
         ${columnHeader}
@@ -74,7 +95,7 @@ export function renderPipeline(container, items, projectTitle) {
       </div>
 
       <div id="no-filter-match" class="hidden text-center py-8 text-muted" style="font-family:Arial,Helvetica,sans-serif;">
-        <p class="text-sm">No journeys match the selected team filter</p>
+        <p class="text-sm">No journeys match the selected filter</p>
       </div>
 
       ${openItems.length === 0 ? `
@@ -95,118 +116,115 @@ export function renderPipeline(container, items, projectTitle) {
         </div>
       ` : ''}
     </div>
+
+    ${renderNewJourneyModal()}
   `;
 
   const allItems = [...openItems, ...closedItems];
   attachRowClickHandlers(allItems);
   attachToggleAllHandler(allItems);
   attachFilterHandlers(allItems);
-  loadAllPendingSummaries(allItems);
+  attachNewJourneyHandler(projectId);
+  loadAllStakeholderBadges(allItems);
 }
 
-function collectAllTeams(items) {
-  const seen = new Set();
-  for (const item of items) {
-    const deps = extractDependencyIssues(item.content?.body || '');
-    for (const dep of deps) {
-      if (dep.team) seen.add(dep.team);
-    }
-  }
-  return [...seen].sort((a, b) => a.localeCompare(b));
-}
+// ---------------------------------------------------------------------------
+// Filter bar (action-required pills)
+// ---------------------------------------------------------------------------
 
-function renderFilterBar(teams) {
-  const pills = teams.map(team => {
-    const color = teamColor(team, 1);
-    const bg = teamColor(team, 0.12);
-    return `<button
-      class="filter-team-pill inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all"
-      data-team="${escapeHtml(team)}"
-      style="border:1px solid rgba(78,99,94,0.3);background:transparent;color:#808C78;font-family:Arial,Helvetica,sans-serif;cursor:pointer;"
-      title="Filter by ${escapeHtml(team)}"
-    >
-      <span class="w-2 h-2 rounded-full flex-none" style="background:${color};"></span>
-      ${escapeHtml(team)}
-    </button>`;
-  }).join('');
-
+function renderFilterBar() {
+  const filters = [
+    { key: 'action:rnd',       label: 'needs R&D',      color: '#3B7CB8' },
+    { key: 'action:docs',      label: 'needs docs',     color: '#6AAE7B' },
+    { key: 'action:red-team',  label: 'needs red team', color: '#E46962' },
+    { key: 'mismatch',         label: '⚠ out of sync',  color: '#FA7B17' },
+  ];
+  const pills = filters.map(f => `
+    <button class="filter-action-pill inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all"
+            data-action="${escapeHtml(f.key)}"
+            style="border:1px solid rgba(78,99,94,0.3);background:transparent;color:#808C78;font-family:Arial,Helvetica,sans-serif;cursor:pointer;">
+      ${escapeHtml(f.label)}
+    </button>`).join('');
   return `
-    <div id="team-filter-bar" class="flex items-center gap-2 flex-wrap">
-      <span class="text-xs flex-none" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Deps:</span>
+    <div id="action-filter-bar" class="flex items-center gap-2 flex-wrap">
+      <span class="text-xs flex-none" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Filter:</span>
       ${pills}
     </div>`;
 }
 
-function applyTeamFilter(allItems) {
+function applyFilter(allItems) {
   const noMatch = document.getElementById('no-filter-match');
-  if (activeTeamFilter.size === 0) {
-    // Show everything
+  if (!activeStateFilter) {
     for (const item of allItems) {
-      const wrapper = document.getElementById(`filter-item-${item.id}`);
-      if (wrapper) wrapper.classList.remove('hidden');
+      document.getElementById(`filter-item-${item.id}`)?.classList.remove('hidden');
     }
     if (noMatch) noMatch.classList.add('hidden');
     return;
   }
-
-  let visibleCount = 0;
+  let visible = 0;
   for (const item of allItems) {
     const wrapper = document.getElementById(`filter-item-${item.id}`);
     if (!wrapper) continue;
-    const itemTeams = JSON.parse(wrapper.dataset.depTeams || '[]');
-    const matches = itemTeams.some(t => activeTeamFilter.has(t));
+    let matches;
+    if (activeStateFilter === 'mismatch') {
+      matches = wrapper.dataset.mismatch === 'true';
+    } else {
+      const labels = JSON.parse(wrapper.dataset.actionLabels || '[]');
+      matches = labels.includes(activeStateFilter);
+    }
     wrapper.classList.toggle('hidden', !matches);
-    if (matches) visibleCount++;
+    if (matches) visible++;
   }
-  if (noMatch) noMatch.classList.toggle('hidden', visibleCount > 0);
+  if (noMatch) noMatch.classList.toggle('hidden', visible > 0);
 }
 
 function attachFilterHandlers(allItems) {
-  document.querySelectorAll('.filter-team-pill').forEach(btn => {
+  document.querySelectorAll('.filter-action-pill').forEach(btn => {
     btn.addEventListener('click', () => {
-      const team = btn.dataset.team;
-      if (activeTeamFilter.has(team)) {
-        activeTeamFilter.delete(team);
+      const key = btn.dataset.action;
+      if (activeStateFilter === key) {
+        activeStateFilter = null;
         btn.style.background = 'transparent';
         btn.style.color = '#808C78';
         btn.style.borderColor = 'rgba(78,99,94,0.3)';
       } else {
-        activeTeamFilter.add(team);
-        const color = teamColor(team, 1);
-        const bg = teamColor(team, 0.15);
-        btn.style.background = bg;
-        btn.style.color = color;
-        btn.style.borderColor = teamColor(team, 0.5);
+        // Deactivate all
+        document.querySelectorAll('.filter-action-pill').forEach(b => {
+          b.style.background = 'transparent';
+          b.style.color = '#808C78';
+          b.style.borderColor = 'rgba(78,99,94,0.3)';
+        });
+        activeStateFilter = key;
+        const COLORS = { 'action:rnd': '#3B7CB8', 'action:docs': '#6AAE7B', 'action:red-team': '#E46962', 'mismatch': '#FA7B17' };
+        const c = COLORS[key] || '#808C78';
+        btn.style.background = c + '22';
+        btn.style.color = c;
+        btn.style.borderColor = c + '88';
       }
-      applyTeamFilter(allItems);
+      applyFilter(allItems);
     });
   });
 }
+
+// ---------------------------------------------------------------------------
+// Pipeline row
+// ---------------------------------------------------------------------------
 
 function renderPipelineRow(item, index, canDrag) {
   const issue = item.content;
   if (!issue) return '';
 
-  const labels = issue.labels?.nodes || [];
+  const labels      = issue.labels?.nodes || [];
   const blockedTeam = extractBlockedTeam(labels);
-  const repo = issue.repository?.nameWithOwner || '';
-  const rankLabel = String(index + 1).padStart(2, '0');
+  const repo        = issue.repository?.nameWithOwner || '';
+  const rankLabel   = String(index + 1).padStart(2, '0');
 
-  // Collect dep team names for this item (used by filter)
-  const depTeams = extractDependencyIssues(issue.body || '').map(d => d.team).filter(Boolean);
+  const actionLabels = labels.filter(l => l.name.startsWith('action:')).map(l => l.name);
 
-  // Journey type labels (gui user / developer / node operator)
-  const typeLabels = labels.filter(l =>
-    /^(gui user|developer|node operator)$/i.test(l.name.trim())
-  );
-  // Release labels (e.g. testnet v0.1)
-  const releaseLabels = labels.filter(l =>
-    /^testnet\b/i.test(l.name.trim())
-  );
+  const typeLabels    = labels.filter(l => /^(gui user|developer|node operator)$/i.test(l.name.trim()));
+  const releaseLabels = labels.filter(l => /^testnet\b/i.test(l.name.trim()));
 
-  // Override journey-type label colours so gui user / developer / node operator are distinct
   const JOURNEY_COLORS = { 'gui user': 'D94F45', 'developer': '3B7CB8', 'node operator': 'C4912C' };
-  // Override release label colours so v0.1 / v0.2 are visually distinct
   const RELEASE_COLORS = { 'testnet v0.1': '4E635E', 'testnet v0.2': '3B7CB8', 'testnet unscheduled': '808C78' };
 
   const labelPill = (l) => {
@@ -214,20 +232,21 @@ function renderPipelineRow(item, index, canDrag) {
     const raw = JOURNEY_COLORS[key] || RELEASE_COLORS[key] || l.color;
     const textColor = raw === l.color && l.color.toLowerCase() === '0e2618' ? '4E635E' : raw;
     return `<span class="inline-flex items-center px-1.5 py-px rounded text-xs font-medium"
-           style="background:#${raw}18;color:#${textColor};border:1px solid #${raw}50;font-family:Arial,Helvetica,sans-serif;">
-       ${escapeHtml(l.name)}
-     </span>`;
+             style="background:#${raw}18;color:#${textColor};border:1px solid #${raw}50;font-family:Arial,Helvetica,sans-serif;">
+               ${escapeHtml(l.name)}
+             </span>`;
   };
 
   const metaLabelsHtml = typeLabels.map(labelPill).join('');
-  const releaseHtml = releaseLabels.length
+  const releaseHtml    = releaseLabels.length
     ? releaseLabels.map(labelPill).join(' ')
     : `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">—</span>`;
 
-  const docUrl = extractDocUrl(issue.body || '');
+  const { link: docUrl } = extractDocumentation(issue.body || '');
 
   return `
-    <div id="filter-item-${item.id}" data-dep-teams="${escapeHtml(JSON.stringify([...new Set(depTeams)]))}">
+    <div id="filter-item-${item.id}"
+         data-action-labels="${escapeHtml(JSON.stringify(actionLabels))}">
       <div
         id="row-${item.id}"
         data-item-id="${item.id}"
@@ -235,7 +254,7 @@ function renderPipelineRow(item, index, canDrag) {
         data-repo="${escapeHtml(repo)}"
         data-issue="${issue.number}"
         draggable="${canDrag}"
-        class="pipeline-row grid grid-cols-[1fr_auto] md:grid-cols-[1fr_8rem_9rem_10rem_2rem] gap-4 items-center px-4 py-3 rounded cursor-pointer transition-all select-none ${canDrag ? 'draggable-row' : ''}"
+        class="pipeline-row grid grid-cols-[1fr_auto] md:grid-cols-[1fr_8rem_9rem_14rem_2rem] gap-4 items-center px-4 py-3 rounded cursor-pointer transition-all select-none ${canDrag ? 'draggable-row' : ''}"
         style="background:rgba(255,255,255,0.75);border:1px solid rgba(78,99,94,0.2);border-left:3px solid ${blockedTeam ? teamColor(blockedTeam, 0.6) : 'transparent'};"
         onmouseover="this.style.background='rgba(78,99,94,0.1)'"
         onmouseout="this.style.background='rgba(255,255,255,0.75)'"
@@ -263,9 +282,6 @@ function renderPipelineRow(item, index, canDrag) {
                 Docs ↗
               </a>
             ` : ''}
-            <span id="doc-warn-${item.id}" class="flex-none self-center hidden"
-                  title="Docs issue is closed but no documentation linked"
-                  style="color:#FA7B17;font-size:14px;line-height:1;cursor:help;">⚠</span>
           </div>
         </div>
 
@@ -279,7 +295,7 @@ function renderPipelineRow(item, index, canDrag) {
           ${releaseHtml}
         </div>
 
-        <!-- Dependencies dots column (desktop) -->
+        <!-- Stakeholder progress column (desktop) -->
         <div id="pending-${item.id}" class="hidden md:flex items-center gap-1 flex-wrap"></div>
 
         <div class="flex items-center justify-end">
@@ -294,151 +310,272 @@ function renderPipelineRow(item, index, canDrag) {
   `;
 }
 
-/**
- * Fetch dep issues for all items in the background and populate pending badges.
- * Handles all three states: not tracked (TODO), pending (open), done (closed).
- */
-async function loadAllPendingSummaries(items) {
+// ---------------------------------------------------------------------------
+// Stakeholder badges (async — loads after render)
+// ---------------------------------------------------------------------------
+
+const RND_COLORS = {
+  'to-be-confirmed':      '#E46962',
+  'confirmed':            '#FA7B17',
+  'in-progress':          '#FA7B17',
+  'doc-packet-delivered': '#6AAE7B',
+};
+const DOCS_COLORS = {
+  'waiting':          '#808C78',
+  'in-progress':      '#FA7B17',
+  'ready-for-review': '#34befc',
+  'merged':           '#6AAE7B',
+};
+const REDTEAM_COLORS = {
+  'waiting':     '#808C78',
+  'in-progress': '#FA7B17',
+  'done':        '#6AAE7B',
+};
+const ACTION_LABEL_COLORS = {
+  'action:rnd':      '#3B7CB8',
+  'action:docs':     '#6AAE7B',
+  'action:red-team': '#E46962',
+};
+
+function dot(color) {
+  return `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;margin-top:1px;"></span>`;
+}
+
+function stakeholderBadge(label, color, url, tooltip) {
+  const tag   = url ? 'a' : 'span';
+  const attrs = url ? `href="${escapeHtml(url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"` : '';
+  return `<${tag} ${attrs}
+    class="inline-flex items-center gap-1 px-1.5 py-px rounded text-xs transition-colors"
+    style="background:rgba(255,255,255,0.7);border:1px solid rgba(78,99,94,0.25);font-family:Arial,Helvetica,sans-serif;color:#4E635E;white-space:nowrap;${url ? 'text-decoration:none;cursor:pointer;' : ''}"
+    title="${escapeHtml(tooltip)}"
+    ${url ? `onmouseover="this.style.background='rgba(78,99,94,0.1)'" onmouseout="this.style.background='rgba(255,255,255,0.7)'"` : ''}>
+    ${dot(color)} ${escapeHtml(label)}
+  </${tag}>`;
+}
+
+export function renderStakeholderBadges(rndTeam, rndState, docsLink, docsState, redTeamLink, redTeamState, actionLabels, mismatch) {
+  const rndLabel = rndTeam || 'r&d';
+  const rndColor = RND_COLORS[rndState] || '#808C78';
+  const rndBg    = rndTeam ? teamColor(rndTeam, 0.15) : 'rgba(255,255,255,0.7)';
+  const rndBorder= rndTeam ? teamColor(rndTeam, 0.35) : 'rgba(78,99,94,0.25)';
+  const rndText  = rndTeam ? teamColor(rndTeam, 0.9)  : '#4E635E';
+  const rndBadge = `<span class="inline-flex items-center gap-1 px-1.5 py-px rounded text-xs font-medium"
+    style="background:${rndBg};border:1px solid ${rndBorder};color:${rndText};font-family:Arial,Helvetica,sans-serif;white-space:nowrap;"
+    title="R&D: ${escapeHtml(rndState)}">
+    ${dot(rndColor)} ${escapeHtml(rndLabel)}
+  </span>`;
+  const docsBadge   = stakeholderBadge('docs',     DOCS_COLORS[docsState]            || '#808C78', docsLink,     `docs: ${docsState}`);
+  const rtBadge     = stakeholderBadge('red team', REDTEAM_COLORS[redTeamState]       || '#808C78', redTeamLink,  `red team: ${redTeamState}`);
+
+  const pills = actionLabels.map(l => {
+    const c = ACTION_LABEL_COLORS[l] || '#808C78';
+    return `<span class="inline-flex items-center px-1.5 py-px rounded text-xs font-medium"
+      style="background:${c}22;color:${c};border:1px solid ${c}50;font-family:Arial,Helvetica,sans-serif;white-space:nowrap;">
+      ${escapeHtml(l.replace('action:', ''))}
+    </span>`;
+  }).join('');
+
+  const warnHtml = mismatch
+    ? `<span title="Action labels out of sync with issue state" style="color:#FA7B17;font-size:12px;cursor:help;">⚠</span>`
+    : '';
+
+  return rndBadge + docsBadge + rtBadge + (pills ? `<span class="flex items-center gap-1">${pills}</span>` : '') + warnHtml;
+}
+
+async function loadAllStakeholderBadges(items) {
   const pat = getReadPAT();
 
-  // Collect URL-based deps across all items
-  const allRefs = [];
-  const itemDepMap = new Map();
+  // Collect all links to fetch
+  const linksToFetch = [];
+  const itemLinkMap  = new Map();
 
   for (const item of items) {
-    const deps = extractDependencyIssues(item.content?.body || '');
-    if (!deps.length) continue;
+    const body = item.content?.body || '';
+    const { link: docsLink }       = extractDocumentation(body);
+    const { tracking: redTeamLink } = extractRedTeam(body);
 
-    const ghDeps      = deps.filter(d => d.url && d.owner && !d.completed && !d.pending); // GitHub issues — fetchable
-    const refDeps     = deps.filter(d => d.url && !d.owner && !d.completed && !d.pending); // Non-GitHub URLs, not completed
-    const doneDeps    = deps.filter(d => d.completed);                                      // Explicitly completed
-    const dateDeps    = deps.filter(d => !d.url && !d.completed && !d.pending && d.targetDate); // Tracked by date only
-    const todoDeps    = deps.filter(d => !d.url && !d.completed && !d.pending && !d.targetDate); // Truly untracked
-    const pendingKwDeps = deps.filter(d => d.pending && !d.completed);                      // Explicit Pending keyword — red
+    const docsIdx = docsLink ? linksToFetch.length : -1;
+    if (docsLink) linksToFetch.push(docsLink);
 
-    // Simpler: track indices per item
-    const startIdx = allRefs.length;
-    ghDeps.forEach(d => allRefs.push({ owner: d.owner, repo: d.repo, number: d.number }));
+    const rtIdx = redTeamLink ? linksToFetch.length : -1;
+    if (redTeamLink) linksToFetch.push(redTeamLink);
 
-    itemDepMap.set(item.id, { todoDeps, doneDeps, refDeps, dateDeps, ghDeps, pendingKwDeps, startIdx });
+    itemLinkMap.set(item.id, { docsIdx, rtIdx });
   }
 
-  const results = allRefs.length ? await fetchIssuesBatch(allRefs, pat) : [];
+  const refResults = linksToFetch.length ? await fetchRefsBatch(linksToFetch, pat) : [];
 
   for (const item of items) {
-    const entry = itemDepMap.get(item.id);
-    if (!entry) continue;
+    const body = item.content?.body || '';
+    const rnd              = extractRnD(body);
+    const docPacketContent = extractDocPacket(body);
+    const { link: docsLink }        = extractDocumentation(body);
+    const { tracking: redTeamLink } = extractRedTeam(body);
+    const labels       = item.content?.labels?.nodes || [];
+    const actionLabels = labels.filter(l => l.name.startsWith('action:')).map(l => l.name);
 
-    // team → {notTracked, pending, pendingKw, done}
-    const teamCounts = new Map();
+    const rndState     = computeRnDState(rnd, docPacketContent);
+    const { docsIdx, rtIdx } = itemLinkMap.get(item.id) || {};
+    const docsRef    = docsIdx >= 0 ? refResults[docsIdx] : null;
+    const rtRef      = rtIdx   >= 0 ? refResults[rtIdx]   : null;
+    const docsState  = computeDocsState(docsLink, docsRef);
+    const redTeamState = computeRedTeamState(redTeamLink, rtRef);
 
-    const ensure = (team) => {
-      if (!teamCounts.has(team)) teamCounts.set(team, { notTracked: 0, pending: 0, pendingKw: 0, done: 0, url: null, targetDate: null });
-      return teamCounts.get(team);
-    };
-
-    for (const dep of entry.todoDeps) {
-      ensure(dep.team).notTracked++;
-    }
-    for (const dep of entry.doneDeps) {
-      const c = ensure(dep.team);
-      c.done++;
-      if (!c.url && dep.url) c.url = dep.url;
-      if (dep.targetDate && !c.targetDate) c.targetDate = dep.targetDate;
-    }
-    for (const dep of entry.dateDeps) {
-      const c = ensure(dep.team);
-      c.pending++;
-      if (dep.targetDate && !c.targetDate) c.targetDate = dep.targetDate;
-    }
-    for (const dep of entry.refDeps) {
-      const c = ensure(dep.team);
-      if (!c.url) c.url = dep.url;
-      if (dep.targetDate && !c.targetDate) c.targetDate = dep.targetDate;
-      c.pending++;  // non-GitHub refs treated as pending (no way to check state)
-    }
-    for (const dep of entry.pendingKwDeps) {
-      const c = ensure(dep.team);
-      if (dep.url && !c.url) c.url = dep.url;
-      if (dep.targetDate && !c.targetDate) c.targetDate = dep.targetDate;
-      c.pending++;
-      c.pendingKw++;
-    }
-    for (let i = 0; i < entry.ghDeps.length; i++) {
-      const dep = entry.ghDeps[i];
-      const result = results[entry.startIdx + i];
-      const counts = ensure(dep.team);
-      if (!counts.url) counts.url = dep.url;
-      if (dep.targetDate && !counts.targetDate) counts.targetDate = dep.targetDate;
-      if (result?.error || result?.issue?.state === 'open') {
-        counts.pending++;
-      } else {
-        counts.done++;
-      }
-    }
+    // Corruption detection: compare actual action labels vs expected
+    const expectedActions = computeActionLabels(rndState, docsState, redTeamState);
+    const mismatch = JSON.stringify([...actionLabels].sort()) !== JSON.stringify([...expectedActions].sort());
 
     const el = document.getElementById(`pending-${item.id}`);
-    if (el) el.innerHTML = renderDepDots(teamCounts);
+    if (el) el.innerHTML = renderStakeholderBadges(
+      rnd.team, rndState, docsLink, docsState, redTeamLink, redTeamState, actionLabels, mismatch
+    );
 
-    // Show doc warning only when: docs dep has a tracked issue, that issue is closed, and no doc URL exists
-    const docUrl = extractDocUrl(item.content?.body || '');
-    if (!docUrl) {
-      let docsIssueClosed = false;
-      for (let i = 0; i < entry.ghDeps.length; i++) {
-        const dep = entry.ghDeps[i];
-        if (dep.team.toLowerCase() === 'docs') {
-          const result = results[entry.startIdx + i];
-          if (result?.issue?.state === 'closed') {
-            docsIssueClosed = true;
-          }
-        }
-      }
-      const warnEl = document.getElementById(`doc-warn-${item.id}`);
-      if (warnEl && docsIssueClosed) {
-        warnEl.classList.remove('hidden');
-      }
+    // Update filter wrapper with current action labels and mismatch flag
+    const wrapper = document.getElementById(`filter-item-${item.id}`);
+    if (wrapper) {
+      wrapper.dataset.actionLabels = JSON.stringify(actionLabels);
+      wrapper.dataset.mismatch = mismatch ? 'true' : 'false';
     }
   }
 }
 
-// Dep dot colours: red = not tracked, orange = open/pending, green = closed/done
-const DEP_COLORS = { notTracked: '#E46962', pending: '#FA7B17', done: '#6AAE7B' };
+// ---------------------------------------------------------------------------
+// New Journey modal
+// ---------------------------------------------------------------------------
 
-function renderDepDots(teamCounts) {
-  if (!teamCounts.size) return '';
+const RND_TEAMS   = ['anon-comms', 'messaging', 'core', 'storage', 'blockchain', 'lez', 'devkit'];
+const JOURNEY_TYPES = [
+  { name: 'developer',     label: 'Developer',      color: '3B7CB8' },
+  { name: 'gui user',      label: 'GUI User',        color: 'D94F45' },
+  { name: 'node operator', label: 'Node Operator',   color: 'C4912C' },
+];
+const RELEASES = ['testnet v0.1', 'testnet v0.2', 'testnet v0.3', 'testnet unscheduled'];
 
-  return [...teamCounts.entries()].map(([team, { notTracked, pending, pendingKw, done, url, targetDate }]) => {
-    let color, statusText;
-    if (pendingKw > 0)       { color = DEP_COLORS.pending;    statusText = 'pending'; }
-    else if (pending > 0)    { color = DEP_COLORS.pending;    statusText = 'pending'; }
-    else if (notTracked > 0) { color = DEP_COLORS.notTracked; statusText = 'not tracked'; }
-    else                     { color = DEP_COLORS.done;       statusText = 'done'; }
-
-    const indicator = statusText === 'not tracked'
-      ? `<span style="color:#FA7B17;font-size:11px;line-height:1;flex-shrink:0;">⚠</span>`
-      : `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;"></span>`;
-
-    const dateColor = targetDate ? targetDateColor(targetDate) : null;
-    const dateHtml = targetDate
-      ? `<span style="font-size:10px;${dateColor ? `color:${dateColor};font-weight:600;` : 'color:#808C78;'}">${escapeHtml(targetDate)}</span>`
-      : '';
-
-    const tag = url ? 'a' : 'span';
-    const linkAttrs = url ? `href="${escapeHtml(url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"` : '';
-
-    return `<${tag} ${linkAttrs} title="${escapeHtml(team)}: ${statusText}${targetDate ? ' — due ' + targetDate : ''}"
-                  class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs transition-colors"
-                  style="background:rgba(255,255,255,0.7);border:1px solid rgba(78,99,94,0.25);font-family:Arial,Helvetica,sans-serif;color:#4E635E;white-space:nowrap;${url ? 'cursor:pointer;text-decoration:none;' : ''}"
-                  ${url ? `onmouseover="this.style.background='rgba(78,99,94,0.1)'" onmouseout="this.style.background='rgba(255,255,255,0.7)'"` : ''}>
-              ${indicator}
-              ${escapeHtml(team)}
-              ${dateHtml}
-            </${tag}>`;
-  }).join('');
+function renderNewJourneyModal() {
+  return `
+    <div id="new-journey-overlay" class="hidden fixed inset-0 z-50 flex items-center justify-center"
+         style="background:rgba(14,38,24,0.7);" onclick="if(event.target===this)window._closeNewJourney()">
+      <div class="w-full max-w-lg mx-4 rounded-lg overflow-hidden shadow-xl"
+           style="background:#F5F3EC;border:1px solid rgba(78,99,94,0.3);">
+        <div class="px-6 py-4 flex items-center justify-between"
+             style="background:#0C2B2D;border-bottom:1px solid rgba(255,255,255,0.1);">
+          <h2 class="text-base font-semibold text-parchment" style="font-family:'Times New Roman',Times,serif;">New Journey</h2>
+          <button onclick="window._closeNewJourney()" class="text-parchment opacity-60 hover:opacity-100 transition-opacity">
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+        <div class="p-6 space-y-4">
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider mb-1.5" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Title <span style="color:#E46962;">*</span></label>
+            <input id="nj-title" type="text" placeholder="Journey title" class="logos-input w-full" />
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-semibold uppercase tracking-wider mb-1.5" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Journey Type <span style="color:#E46962;">*</span></label>
+              <select id="nj-type" class="logos-input w-full text-sm">
+                ${JOURNEY_TYPES.map(t => `<option value="${t.name}">${t.label}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold uppercase tracking-wider mb-1.5" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Target Release <span style="color:#E46962;">*</span></label>
+              <select id="nj-release" class="logos-input w-full text-sm">
+                ${RELEASES.map(r => `<option value="${r}">${r}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider mb-1.5" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">R&D Owner Team <span style="color:#E46962;">*</span></label>
+            <select id="nj-team" class="logos-input w-full text-sm">
+              ${RND_TEAMS.map(t => `<option value="${t}">${t}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider mb-1.5" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Milestone URL <span class="font-normal normal-case" style="color:#808C78;">(optional)</span></label>
+            <input id="nj-milestone" type="text" placeholder="https://roadmap.logos.co/..." class="logos-input w-full text-sm" />
+          </div>
+        </div>
+        <div class="px-6 py-4 flex items-center justify-end gap-3" style="border-top:1px solid rgba(78,99,94,0.15);">
+          <button onclick="window._closeNewJourney()" class="text-sm text-muted hover:text-forest transition-colors" style="font-family:Arial,Helvetica,sans-serif;">Cancel</button>
+          <button id="nj-submit" onclick="window._submitNewJourney()"
+                  class="text-sm text-white px-4 py-1.5 rounded transition-colors"
+                  style="background:#E46962;font-family:Arial,Helvetica,sans-serif;"
+                  onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">
+            Create Journey
+          </button>
+        </div>
+      </div>
+    </div>`;
 }
 
+function attachNewJourneyHandler(projectId) {
+  const btn = document.getElementById('btn-new-journey');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      document.getElementById('new-journey-overlay')?.classList.remove('hidden');
+      document.getElementById('nj-title')?.focus();
+    });
+  }
+
+  window._closeNewJourney = () => {
+    document.getElementById('new-journey-overlay')?.classList.add('hidden');
+    ['nj-title', 'nj-milestone'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+  };
+
+  window._submitNewJourney = async () => {
+    const title     = document.getElementById('nj-title')?.value.trim();
+    const type      = document.getElementById('nj-type')?.value;
+    const release   = document.getElementById('nj-release')?.value;
+    const team      = document.getElementById('nj-team')?.value;
+    const milestone = document.getElementById('nj-milestone')?.value.trim();
+
+    if (!title) { showToast('error', 'Title is required'); return; }
+
+    const pat = getWritePAT();
+    if (!pat) { showToast('error', 'Write token required'); return; }
+    if (!_projectOwner || !_projectRepo) { showToast('error', 'Could not determine repository'); return; }
+
+    const submitBtn = document.getElementById('nj-submit');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Creating…'; }
+
+    try {
+      // Ensure action:rnd label exists
+      await createLabel(_projectOwner, _projectRepo, 'action:rnd', 'E46962', pat);
+
+      // Build body
+      let body = newIssueBody(team);
+      if (milestone) body = body.replace(/- milestone:[ ]*/, `- milestone: ${milestone}`);
+
+      const labels = [type, release, 'action:rnd'];
+      const issue  = await createIssue(_projectOwner, _projectRepo, title, body, labels, pat);
+
+      if (projectId && issue.node_id) {
+        await addItemToProject(projectId, issue.node_id, pat);
+      }
+
+      showToast('success', `Created #${issue.number}: ${title}`);
+      window._closeNewJourney();
+
+      // Reload after short delay to show new issue
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (err) {
+      showToast('error', `Failed to create: ${err.message}`);
+    } finally {
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Create Journey'; }
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Expand / Collapse all
+// ---------------------------------------------------------------------------
+
 function attachToggleAllHandler(items) {
-  const btn = document.getElementById('btn-toggle-all');
+  const btn   = document.getElementById('btn-toggle-all');
   const label = document.getElementById('toggle-all-label');
   if (!btn || !label) return;
 
@@ -448,7 +585,7 @@ function attachToggleAllHandler(items) {
       collapseAll();
       label.textContent = 'Expand All';
     } else {
-      label.textContent = 'Expanding...';
+      label.textContent = 'Expanding…';
       await expandAll(items);
       label.textContent = 'Collapse All';
     }
