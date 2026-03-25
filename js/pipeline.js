@@ -152,22 +152,28 @@ export function renderPipeline(container, items, projectTitle, projectId) {
 async function loadInstructions() {
   const content = document.getElementById('instructions-content');
   if (!content) return;
+
+  let text;
   try {
     const res = await fetch('./README.md');
-    if (!res.ok) { content.innerHTML = ''; return; }
-    const text = await res.text();
-    content.innerHTML = renderMarkdown(text);
+    if (!res.ok) return;
+    text = await res.text();
+  } catch { return; }
 
-    // Transform mermaid fenced code blocks into mermaid divs
-    content.querySelectorAll('pre > code.language-mermaid').forEach(code => {
-      const div = document.createElement('div');
-      div.className = 'mermaid';
-      div.textContent = code.textContent;
-      code.parentElement.replaceWith(div);
-    });
+  content.innerHTML = renderMarkdown(text);
 
-    // Load and render mermaid if any diagrams are present
-    if (content.querySelector('.mermaid')) {
+  // Transform mermaid fenced code blocks into mermaid divs
+  content.querySelectorAll('pre > code.language-mermaid').forEach(code => {
+    const div = document.createElement('div');
+    div.className = 'mermaid';
+    div.textContent = code.textContent;
+    code.parentElement.replaceWith(div);
+  });
+
+  // Load and render mermaid — isolated so failures don't wipe the content
+  const mermaidNodes = content.querySelectorAll('.mermaid');
+  if (mermaidNodes.length) {
+    try {
       if (!window.mermaid) {
         await new Promise((resolve, reject) => {
           const s = document.createElement('script');
@@ -178,10 +184,8 @@ async function loadInstructions() {
         });
       }
       window.mermaid.initialize({ startOnLoad: false, theme: 'neutral' });
-      await window.mermaid.run({ nodes: content.querySelectorAll('.mermaid') });
-    }
-  } catch {
-    content.innerHTML = '';
+      await window.mermaid.run({ nodes: mermaidNodes });
+    } catch { /* mermaid unavailable — leave code blocks as text */ }
   }
 }
 
