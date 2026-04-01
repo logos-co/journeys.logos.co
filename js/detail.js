@@ -84,9 +84,25 @@ function renderDetailShell(item) {
 
         <!-- Header -->
         <div class="flex items-center justify-between gap-4">
-          <div class="flex items-center gap-2 text-xs" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">
-            <span>${issue.repository?.nameWithOwner || ''}</span>
-            <span>·</span><span>#${issue.number}</span>
+          <div class="flex items-center gap-2 flex-1 min-w-0">
+            <div class="flex items-center gap-2 text-xs flex-none" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">
+              <span>${issue.repository?.nameWithOwner || ''}</span>
+              <span>·</span><span>#${issue.number}</span>
+            </div>
+            <button
+              title="Copy journey name"
+              data-copy="${escapeHtml(issue.title)}"
+              onclick="navigator.clipboard.writeText(this.dataset.copy).then(()=>{ const el=this; el.style.color='#6AAE7B'; setTimeout(()=>el.style.color='',1200); })"
+              class="flex-none flex items-center gap-1 text-xs transition-colors px-1.5 py-0.5 rounded"
+              style="color:#808C78;font-family:Arial,Helvetica,sans-serif;border:1px solid rgba(78,99,94,0.3);background:none;cursor:pointer;"
+              onmouseover="this.style.borderColor='rgba(228,105,98,0.5)';this.style.color='#E46962'"
+              onmouseout="this.style.borderColor='rgba(78,99,94,0.3)';this.style.color='#808C78'"
+            >
+              <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+              Copy name
+            </button>
           </div>
           <a href="${issue.url}" target="_blank" rel="noopener"
              class="flex-none flex items-center gap-1.5 text-xs text-muted transition-colors px-2.5 py-1.5 rounded"
