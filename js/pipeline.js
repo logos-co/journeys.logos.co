@@ -588,6 +588,7 @@ async function loadAllStakeholderBadges(items) {
     const { docsIdx, rtIdx } = itemLinkMap.get(item.id) || {};
     const docsRef    = docsIdx >= 0 ? refResults[docsIdx] : null;
     const rtRef      = rtIdx   >= 0 ? refResults[rtIdx]   : null;
+    item._refCache   = { docsLink, docsRef, redTeamLink, rtRef };
     const docsState  = computeDocsState(docsLink, docsRef);
     const redTeamState = computeRedTeamState(redTeamLink, rtRef);
 

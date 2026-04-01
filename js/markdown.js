@@ -78,15 +78,24 @@ export function extractDocPacket(body) {
 }
 
 /**
- * Parse ## Documentation section for the link.
+ * Parse ## Documentation section for the link and optional tracking issue.
  * Looks for `- link: URL` first; falls back to bare URL (backward compat).
+ * Also parses `- tracking: URL` for a logos-co/logos-docs tracking issue.
  */
 export function extractDocumentation(body) {
   const section = extractSection(body, 'Documentation');
   const linkM = section.match(/^-[ \t]+link:[ \t]*(\S+)/m);
-  if (linkM) return { link: linkM[1] };
-  const urlM = section.match(/https?:\/\/\S+/);
-  return { link: urlM ? urlM[0].replace(/[)\].,;>]+$/, '') : null };
+  const trackingM = section.match(/^-[ \t]+tracking:[ \t]*(\S+)/m);
+  let link;
+  if (linkM) {
+    link = linkM[1];
+  } else {
+    // Backward compat: look for a bare URL, but exclude the tracking line
+    const sectionWithoutTracking = section.replace(/^-[ \t]+tracking:.*$/gm, '');
+    const urlM = sectionWithoutTracking.match(/https?:\/\/\S+/);
+    link = urlM ? urlM[0].replace(/[)\].,;>]+$/, '') : null;
+  }
+  return { link, tracking: trackingM ? trackingM[1] : null };
 }
 
 /** Parse ## Red Team section → { tracking } */
@@ -189,6 +198,11 @@ export function setDocLink(body, link) {
   return upsertSectionField(body, 'Documentation', 'link', link);
 }
 
+/** Update ## Documentation tracking field. */
+export function setDocTracking(body, tracking) {
+  return upsertSectionField(body, 'Documentation', 'tracking', tracking);
+}
+
 /** Update ## Red Team tracking field. */
 export function setRedTeamTracking(body, link) {
   return upsertSectionField(body, 'Red Team', 'tracking', link);
@@ -206,6 +220,7 @@ export function newIssueBody(team = '') {
 
 ## Documentation
 - link:${' '}
+- tracking:${' '}
 
 ## Red Team
 - tracking:${' '}

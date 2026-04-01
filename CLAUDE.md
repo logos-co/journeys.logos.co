@@ -36,7 +36,9 @@ Journeys are GitHub issues in the connected project board. Each issue has:
 - **Issue body** with structured sections (3-stakeholder workflow):
   - `## R&D` — fields: `- team: <name>`, `- milestone: <url>`, `- date: <DDMmmYY>`
   - `## Doc Packet` — field: `- link: <url>` pointing to a logos-docs issue created from the [doc packet template](https://github.com/logos-co/logos-docs/issues/new?template=doc-packet.yml); presence of the link = delivered.
-  - `## Documentation` — field: `- link: <url>` pointing to logos-docs issue → PR → live doc
+  - `## Documentation` — fields:
+    - `- link: <url>` — the final doc URL (logos-docs issue → PR → live doc); drives the docs state machine
+    - `- tracking: <url>` — a `logos-co/logos-docs` issue used to track documentation progress (display only; does not affect docs state)
   - `## Red Team` — field: `- tracking: <url>` pointing to red team tracking issue
 
 ### 3-Stakeholder State Machine
@@ -79,6 +81,7 @@ gh issue create --repo logos-co/journeys.logos.co \
 
 ## Documentation
 - link:
+- tracking:
 
 ## Red Team
 - tracking:'

@@ -10,7 +10,7 @@ import {
   renderMarkdown, extractAllBlockedLabels, extractDescription,
   extractRnD, extractDocPacket, extractDocumentation, extractRedTeam,
   computeRnDState, computeDocsState, computeRedTeamState, computeActionLabels,
-  setRnDField, setDocPacketLink, setDocLink, setRedTeamTracking,
+  setRnDField, setDocPacketLink, setDocLink, setDocTracking, setRedTeamTracking,
 } from './markdown.js';
 import { getReadPAT, getWritePAT, hasWritePAT } from './config.js';
 import { teamColor, showToast } from './app.js';
@@ -202,6 +202,17 @@ const REDTEAM_STATE_LABELS = {
 };
 const RND_TEAMS = ['anon-comms', 'messaging', 'core', 'storage', 'blockchain', 'zones', 'devkit'];
 
+function issueStatusBadge(ref) {
+  if (!ref || ref.state === 'error') return '';
+  const color = ref.state === 'open' ? '#6AAE7B' : '#808C78';
+  const label = ref.state === 'open' ? 'Open' : 'Closed';
+  return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs flex-none"
+    style="background:${color}22;color:${color};border:1px solid ${color}44;font-family:Arial,Helvetica,sans-serif;">
+    <span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:${color};"></span>
+    ${label}
+  </span>`;
+}
+
 function stateBadgeHtml(label, color) {
   return `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium"
     style="background:${color}22;color:${color};border:1px solid ${color}55;font-family:Arial,Helvetica,sans-serif;">
@@ -228,7 +239,7 @@ function fieldRow(label, valueHtml) {
   </div>`;
 }
 
-async function loadWorkflowSections(itemId, item, bodyOverride) {
+async function loadWorkflowSections(itemId, item, bodyOverride, preloadedRefs = null) {
   const body      = bodyOverride ?? item.content?.body ?? '';
   const issue     = item.content;
   const canWrite  = hasWritePAT();
@@ -236,13 +247,15 @@ async function loadWorkflowSections(itemId, item, bodyOverride) {
 
   const rnd            = extractRnD(body);
   const docPacketContent = extractDocPacket(body);
-  const { link: docsLink }       = extractDocumentation(body);
+  const { link: docsLink, tracking: docsTracking } = extractDocumentation(body);
   const { tracking: redTeamLink } = extractRedTeam(body);
 
-  // Fetch docs + redteam refs in parallel
-  const [docsRef, rtRef] = await Promise.all([
-    docsLink     ? fetchRef(docsLink,     pat) : Promise.resolve(null),
-    redTeamLink  ? fetchRef(redTeamLink,  pat) : Promise.resolve(null),
+  // Fetch refs — reuse preloaded refs (recursive call after label sync) or pipeline cache
+  const cache = item?._refCache;
+  const [docsRef, rtRef, docsTrackingRef] = preloadedRefs ?? await Promise.all([
+    docsLink    ? (cache?.docsLink    === docsLink    ? Promise.resolve(cache.docsRef) : fetchRef(docsLink,    pat)) : Promise.resolve(null),
+    redTeamLink ? (cache?.redTeamLink === redTeamLink ? Promise.resolve(cache.rtRef)   : fetchRef(redTeamLink, pat)) : Promise.resolve(null),
+    docsTracking ? fetchRef(docsTracking, pat) : Promise.resolve(null),
   ]);
 
   const rndState     = computeRnDState(rnd, docPacketContent);
@@ -269,7 +282,7 @@ async function loadWorkflowSections(itemId, item, bodyOverride) {
 
   workflowEl.innerHTML = renderWorkflowSections(
     itemId, rnd, rndState, docPacketContent,
-    docsLink, docsRef, docsState,
+    docsLink, docsRef, docsState, docsTracking, docsTrackingRef,
     redTeamLink, rtRef, redTeamState,
     repoWithOwner, issueNumber, canWrite
   );
@@ -289,8 +302,8 @@ async function loadWorkflowSections(itemId, item, bodyOverride) {
             .filter(l => !removed.includes(l.name))
             .concat(added.map(name => ({ name, color: 'E46962' })));
         }
-        // Reload the panel (same pattern as other saves)
-        await loadWorkflowSections(itemId, item, body);
+        // Reload the panel, reusing already-fetched refs
+        await loadWorkflowSections(itemId, item, body, [docsRef, rtRef, docsTrackingRef]);
       } catch (err) {
         console.warn('Auto-sync labels failed:', err);
       }
@@ -332,7 +345,7 @@ function renderActionBanner(actualActions, expectedActions, mismatch, itemId, re
 
 function renderWorkflowSections(
   itemId, rnd, rndState, docPacketContent,
-  docsLink, docsRef, docsState,
+  docsLink, docsRef, docsState, docsTracking, docsTrackingRef,
   redTeamLink, rtRef, redTeamState,
   repoWithOwner, issueNumber, canWrite
 ) {
@@ -344,15 +357,11 @@ function renderWorkflowSections(
   // ── Doc Packet Section (always shown) ──
   sections.push(renderDocPacketSection(itemId, docPacketContent, rndState, canWrite));
 
-  // ── Documentation Section (shown when rndState = doc-packet-delivered OR link exists) ──
-  if (rndState === 'doc-packet-delivered' || docsLink) {
-    sections.push(renderDocumentationSection(itemId, docsLink, docsRef, docsState, repoWithOwner, issueNumber, canWrite));
-  }
+  // ── Documentation Section (always shown) ──
+  sections.push(renderDocumentationSection(itemId, docsLink, docsRef, docsState, docsTracking, docsTrackingRef, repoWithOwner, issueNumber, canWrite));
 
-  // ── Red Team Section (shown when docsState = ready-for-review OR tracking exists) ──
-  if (docsState === 'ready-for-review' || redTeamLink) {
-    sections.push(renderRedTeamSection(itemId, redTeamLink, rtRef, redTeamState, repoWithOwner, issueNumber, canWrite));
-  }
+  // ── Red Team Section (always shown) ──
+  sections.push(renderRedTeamSection(itemId, redTeamLink, rtRef, redTeamState, repoWithOwner, issueNumber, canWrite));
 
   return `<div class="space-y-3">${sections.join('')}</div>`;
 }
@@ -475,25 +484,14 @@ function renderDocPacketSection(itemId, docPacketContent, rndState, canWrite, is
   return sectionCard('Doc Packet', stateHtml, body);
 }
 
-function renderDocumentationSection(itemId, docsLink, docsRef, docsState, repoWithOwner, issueNumber, canWrite) {
+function renderDocumentationSection(itemId, docsLink, docsRef, docsState, docsTracking, docsTrackingRef, repoWithOwner, issueNumber, canWrite) {
   const color = DOCS_COLORS[docsState] || '#808C78';
   const stateLabel = DOCS_STATE_LABELS[docsState] || docsState;
 
-  let linkHtml;
-  if (docsLink) {
-    const title = docsRef?.title || docsLink.replace(/^https?:\/\//, '');
-    linkHtml = `<a href="${escapeHtml(docsLink)}" target="_blank" rel="noopener"
-       class="text-xs truncate hover:underline" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
-       onclick="event.stopPropagation()">
-      ${escapeHtml(title)}
-    </a>`;
-  } else {
-    linkHtml = `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">no link</span>`;
-  }
+  let linkHtml, trackingHtml;
 
-  let editHtml = '';
   if (canWrite) {
-    editHtml = `<span class="flex items-center gap-1 mt-2">
+    linkHtml = `<span class="flex-1 flex items-center gap-1 min-w-0">
       <input id="docs-link-${itemId}" type="text"
              value="${escapeHtml(docsLink || '')}"
              placeholder="https://github.com/logos-co/logos-docs/..."
@@ -505,11 +503,43 @@ function renderDocumentationSection(itemId, docsLink, docsRef, docsState, repoWi
               style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;"
               onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">✓</button>
     </span>`;
+    trackingHtml = `<span class="flex-1 flex items-center gap-1 min-w-0">
+      <input id="docs-tracking-${itemId}" type="text"
+             value="${escapeHtml(docsTracking || '')}"
+             placeholder="https://github.com/logos-co/logos-docs/issues/..."
+             data-original="${escapeHtml(docsTracking || '')}"
+             class="logos-input text-xs flex-1 min-w-0 py-0.5"
+             onfocus="this.style.borderColor='#E46962'"
+             onblur="this.style.borderColor=''" />
+      <button id="docs-tracking-save-${itemId}" class="hidden text-xs px-1.5 py-0.5 rounded transition-colors flex-none"
+              style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;"
+              onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">✓</button>
+    </span>`;
+  } else {
+    if (docsLink) {
+      const title = docsRef?.title || docsLink.replace(/^https?:\/\//, '');
+      linkHtml = `<a href="${escapeHtml(docsLink)}" target="_blank" rel="noopener"
+         class="text-xs truncate hover:underline" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
+         onclick="event.stopPropagation()">${escapeHtml(title)}</a>`;
+    } else {
+      linkHtml = `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">no link</span>`;
+    }
+    if (docsTracking) {
+      const title = docsTrackingRef?.title || docsTracking.replace(/^https?:\/\//, '');
+      trackingHtml = `<span class="flex items-center gap-2 min-w-0">
+        <a href="${escapeHtml(docsTracking)}" target="_blank" rel="noopener"
+           class="text-xs truncate hover:underline" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
+           onclick="event.stopPropagation()">${escapeHtml(title)}</a>
+        ${issueStatusBadge(docsTrackingRef)}
+      </span>`;
+    } else {
+      trackingHtml = `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">no tracking issue</span>`;
+    }
   }
 
-  const body = `<div class="space-y-1">
-    ${fieldRow('Link', linkHtml)}
-    ${editHtml}
+  const body = `<div class="space-y-2">
+    ${fieldRow('Final doc link', linkHtml)}
+    ${fieldRow('Tracking issue', trackingHtml)}
   </div>`;
 
   return sectionCard('Documentation', stateBadgeHtml(stateLabel, color), body);
@@ -520,20 +550,8 @@ function renderRedTeamSection(itemId, redTeamLink, rtRef, redTeamState, repoWith
   const stateLabel = REDTEAM_STATE_LABELS[redTeamState] || redTeamState;
 
   let linkHtml;
-  if (redTeamLink) {
-    const title = rtRef?.title || redTeamLink.replace(/^https?:\/\//, '');
-    linkHtml = `<a href="${escapeHtml(redTeamLink)}" target="_blank" rel="noopener"
-       class="text-xs truncate hover:underline" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
-       onclick="event.stopPropagation()">
-      ${escapeHtml(title)}
-    </a>`;
-  } else {
-    linkHtml = `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">no tracking issue</span>`;
-  }
-
-  let editHtml = '';
   if (canWrite) {
-    editHtml = `<span class="flex items-center gap-1 mt-2">
+    linkHtml = `<span class="flex-1 flex items-center gap-1 min-w-0">
       <input id="redteam-link-${itemId}" type="text"
              value="${escapeHtml(redTeamLink || '')}"
              placeholder="https://github.com/logos-co/journeys.logos.co/..."
@@ -545,11 +563,17 @@ function renderRedTeamSection(itemId, redTeamLink, rtRef, redTeamState, repoWith
               style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;"
               onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">✓</button>
     </span>`;
+  } else if (redTeamLink) {
+    const title = rtRef?.title || redTeamLink.replace(/^https?:\/\//, '');
+    linkHtml = `<a href="${escapeHtml(redTeamLink)}" target="_blank" rel="noopener"
+       class="text-xs truncate hover:underline" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
+       onclick="event.stopPropagation()">${escapeHtml(title)}</a>`;
+  } else {
+    linkHtml = `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">no tracking issue</span>`;
   }
 
-  const body = `<div class="space-y-1">
-    ${fieldRow('Tracking', linkHtml)}
-    ${editHtml}
+  const body = `<div class="space-y-2">
+    ${fieldRow('Tracking issue', linkHtml)}
   </div>`;
 
   return sectionCard('Red Team', stateBadgeHtml(stateLabel, color), body);
@@ -637,6 +661,26 @@ function attachWorkflowHandlers(itemId, repoWithOwner, issueNumber) {
     });
     docsSave.addEventListener('click', () =>
       window._saveDocLink(itemId, repoWithOwner, issueNumber, docsInput.value.trim())
+    );
+  }
+
+  // Docs tracking input
+  const docsTrackingInput = document.getElementById(`docs-tracking-${itemId}`);
+  const docsTrackingSave  = document.getElementById(`docs-tracking-save-${itemId}`);
+  if (docsTrackingInput && docsTrackingSave) {
+    const showSave = () => {
+      if (docsTrackingInput.value.trim() !== docsTrackingInput.dataset.original)
+        docsTrackingSave.classList.remove('hidden');
+      else
+        docsTrackingSave.classList.add('hidden');
+    };
+    docsTrackingInput.addEventListener('input', showSave);
+    docsTrackingInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); docsTrackingSave.click(); }
+      if (e.key === 'Escape') { docsTrackingInput.value = docsTrackingInput.dataset.original; docsTrackingSave.classList.add('hidden'); docsTrackingInput.blur(); }
+    });
+    docsTrackingSave.addEventListener('click', () =>
+      window._saveDocTracking(itemId, repoWithOwner, issueNumber, docsTrackingInput.value.trim())
     );
   }
 
@@ -879,6 +923,32 @@ export function registerLabelHandlers() {
       await updateIssueBody(owner, repo, issueNumber, newBody, pat);
       if (item?.content) item.content.body = newBody;
       showToast('success', 'Saved documentation link');
+      await loadWorkflowSections(itemId, item || { content: { body: newBody, repository: { nameWithOwner: repoWithOwner }, number: issueNumber, labels: { nodes: [] } } }, newBody);
+    } catch (err) {
+      showToast('error', `Failed to save: ${err.message}`);
+    }
+  };
+
+  // -- Documentation tracking save --
+  window._saveDocTracking = async (itemId, repoWithOwner, issueNumber, value) => {
+    if (value && !/^https?:\/\/github\.com\/logos-co\/logos-docs\/issues\/\d+$/.test(value)) {
+      showToast('error', 'Must be a logos-co/logos-docs issue URL');
+      return;
+    }
+
+    const pat = getWritePAT();
+    if (!pat) { showToast('error', 'Write token required'); return; }
+
+    const [owner, repo] = (repoWithOwner || '').split('/');
+    if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
+
+    try {
+      const item = itemRegistry.get(itemId);
+      const currentBody = item?.content?.body ?? (await fetchIssue(owner, repo, issueNumber, pat)).body ?? '';
+      const newBody = setDocTracking(currentBody, value || null);
+      await updateIssueBody(owner, repo, issueNumber, newBody, pat);
+      if (item?.content) item.content.body = newBody;
+      showToast('success', 'Saved documentation tracking issue');
       await loadWorkflowSections(itemId, item || { content: { body: newBody, repository: { nameWithOwner: repoWithOwner }, number: issueNumber, labels: { nodes: [] } } }, newBody);
     } catch (err) {
       showToast('error', `Failed to save: ${err.message}`);

@@ -29,7 +29,6 @@ jobs:
           V=$(git rev-parse --short HEAD)
           sed -i "s|css/app.css\"|css/app.css?v=$V\"|g" index.html
           sed -i "s|js/app.js\"|js/app.js?v=$V\"|g" index.html
-          sed -i "s|__VERSION__|$V|g" index.html
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
