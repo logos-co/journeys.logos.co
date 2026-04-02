@@ -34,7 +34,7 @@ Journeys are GitHub issues in the connected project board. Each issue has:
 - **Labels** for blocked status: `blocked:teamname` (regex: `/^blocked:/i`)
 - **Labels** for action required: `action:rnd`, `action:docs`, `action:red-team` — auto-managed by the app
 - **Issue body** with structured sections (3-stakeholder workflow):
-  - `## R&D` — fields: `- team: <name>`, `- milestone: <url>`, `- date: <DDMmmYY>`
+  - `## R&D` — fields: `- team: <name>`, `- milestone: <url>` (multiple lines allowed, one per milestone), `- date: <DDMmmYY>`
   - `## Doc Packet` — field: `- link: <url>` pointing to a logos-docs issue created from the [doc packet template](https://github.com/logos-co/logos-docs/issues/new?template=doc-packet.yml); presence of the link = delivered.
   - `## Documentation` — fields:
     - `- link: <url>` — the final doc URL (logos-docs issue → PR → live doc); drives the docs state machine

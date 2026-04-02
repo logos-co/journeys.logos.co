@@ -10,7 +10,7 @@ import {
   renderMarkdown, extractAllBlockedLabels, extractDescription,
   extractRnD, extractDocPacket, extractDocumentation, extractRedTeam,
   computeRnDState, computeDocsState, computeRedTeamState, computeActionLabels,
-  setRnDField, setDocPacketLink, setDocLink, setDocTracking, setRedTeamTracking,
+  setRnDField, setRnDMilestones, setDocPacketLink, setDocLink, setDocTracking, setRedTeamTracking,
 } from './markdown.js';
 import { getReadPAT, getWritePAT, hasWritePAT } from './config.js';
 import { teamColor, showToast } from './app.js';
@@ -362,18 +362,34 @@ function renderRnDSection(itemId, rnd, rndState, repoWithOwner, issueNumber, can
         <option value="">— select team —</option>
         ${teamOptions}
       </select>`;
-    milestoneHtml = `<span class="flex-1 flex items-center gap-1 min-w-0">
-      <input id="rnd-milestone-${itemId}" type="text"
-             value="${escapeHtml(rnd.milestone || '')}"
-             placeholder="https://roadmap.logos.co/{team}/roadmap/..."
-             data-original="${escapeHtml(rnd.milestone || '')}"
-             class="logos-input text-xs flex-1 min-w-0 py-0.5"
-             onfocus="this.style.borderColor='#E46962'"
-             onblur="this.style.borderColor=''" />
-      <button id="rnd-milestone-save-${itemId}" class="hidden text-xs px-1.5 py-0.5 rounded transition-colors flex-none"
-              style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;"
-              onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">✓</button>
-    </span>`;
+    const milestoneItems = rnd.milestones.map((url, idx) =>
+      `<div class="flex items-center gap-1 min-w-0">
+        <a href="${escapeHtml(url)}" target="_blank" rel="noopener"
+           class="text-xs truncate hover:underline flex-1 min-w-0" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
+           onclick="event.stopPropagation()">
+          ${escapeHtml(url.replace(/^https?:\/\//, ''))}
+        </a>
+        <button class="text-xs px-1 py-0.5 rounded transition-colors flex-none"
+                style="color:#E46962;font-family:Arial,Helvetica,sans-serif;cursor:pointer;"
+                title="Remove milestone"
+                onclick="event.stopPropagation();window._removeRnDMilestone('${escapeHtml(itemId)}', '${escapeHtml(repoWithOwner)}', ${issueNumber}, ${idx})">✕</button>
+      </div>`
+    ).join('');
+    milestoneHtml = `<div class="flex-1 min-w-0 space-y-1">
+      ${milestoneItems}
+      <div class="flex items-center gap-1 min-w-0">
+        <input id="rnd-milestone-add-${itemId}" type="text"
+               placeholder="https://roadmap.logos.co/..."
+               class="logos-input text-xs flex-1 min-w-0 py-0.5"
+               onfocus="this.style.borderColor='#E46962'"
+               onblur="this.style.borderColor=''" />
+        <button class="text-xs px-1.5 py-0.5 rounded transition-colors flex-none"
+                style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;cursor:pointer;"
+                onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'"
+                title="Add milestone"
+                onclick="event.stopPropagation();window._addRnDMilestone('${escapeHtml(itemId)}', '${escapeHtml(repoWithOwner)}', ${issueNumber})">+</button>
+      </div>
+    </div>`;
     dateHtml = `<span class="flex items-center gap-1">
       <input id="rnd-date-${itemId}" type="text"
              value="${escapeHtml(rnd.date || '')}"
@@ -394,12 +410,14 @@ function renderRnDSection(itemId, rnd, rndState, repoWithOwner, issueNumber, can
            ${escapeHtml(rnd.team)}
          </span>`
       : `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">not set</span>`;
-    milestoneHtml = rnd.milestone
-      ? `<a href="${escapeHtml(rnd.milestone)}" target="_blank" rel="noopener"
-             class="text-xs truncate hover:underline" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
-             onclick="event.stopPropagation()">
-           ${escapeHtml(rnd.milestone.replace(/^https?:\/\//, ''))}
-         </a>`
+    milestoneHtml = rnd.milestones.length > 0
+      ? `<div class="flex-1 min-w-0 space-y-1">${rnd.milestones.map(url =>
+          `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"
+              class="text-xs truncate hover:underline block" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
+              onclick="event.stopPropagation()">
+            ${escapeHtml(url.replace(/^https?:\/\//, ''))}
+          </a>`
+        ).join('')}</div>`
       : `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">not set</span>`;
     dateHtml = rnd.date
       ? `<span class="text-xs font-medium" style="color:#4E635E;font-family:Arial,Helvetica,sans-serif;">${escapeHtml(rnd.date)}</span>`
@@ -409,7 +427,10 @@ function renderRnDSection(itemId, rnd, rndState, repoWithOwner, issueNumber, can
   const body = `
     <div class="space-y-2">
       ${fieldRow('Team', teamHtml)}
-      ${fieldRow('Milestone', milestoneHtml)}
+      <div class="flex items-start gap-2">
+        <span class="text-xs w-20 flex-none pt-0.5" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">${rnd.milestones.length > 1 ? 'Milestones' : 'Milestone'}</span>
+        ${milestoneHtml}
+      </div>
       ${fieldRow('Date', dateHtml)}
     </div>`;
 
@@ -562,24 +583,19 @@ function renderRedTeamSection(itemId, redTeamLink, rtRef, redTeamState, repoWith
 // ---------------------------------------------------------------------------
 
 function attachWorkflowHandlers(itemId, repoWithOwner, issueNumber) {
-  // Milestone input: show save button on change
-  const milestoneInput = document.getElementById(`rnd-milestone-${itemId}`);
-  const milestoneSave  = document.getElementById(`rnd-milestone-save-${itemId}`);
-  if (milestoneInput && milestoneSave) {
-    const showSave = () => {
-      if (milestoneInput.value.trim() !== milestoneInput.dataset.original)
-        milestoneSave.classList.remove('hidden');
-      else
-        milestoneSave.classList.add('hidden');
-    };
-    milestoneInput.addEventListener('input', showSave);
-    milestoneInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); milestoneSave.click(); }
-      if (e.key === 'Escape') { milestoneInput.value = milestoneInput.dataset.original; milestoneSave.classList.add('hidden'); milestoneInput.blur(); }
+  // Milestone add input: Enter to add
+  const milestoneAddInput = document.getElementById(`rnd-milestone-add-${itemId}`);
+  if (milestoneAddInput) {
+    milestoneAddInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        window._addRnDMilestone(itemId, repoWithOwner, issueNumber);
+      }
+      if (e.key === 'Escape') {
+        milestoneAddInput.value = '';
+        milestoneAddInput.blur();
+      }
     });
-    milestoneSave.addEventListener('click', () =>
-      window._saveRnDField(itemId, repoWithOwner, issueNumber, 'milestone', milestoneInput.value.trim())
-    );
   }
 
   // Date input: show save button on change
@@ -828,12 +844,9 @@ export function registerLabelHandlers() {
 
   // -- R&D field save (team / milestone / date) --
   window._saveRnDField = async (itemId, repoWithOwner, issueNumber, field, value) => {
+    if (field === 'milestone') return; // Use _addRnDMilestone / _removeRnDMilestone
     if (field === 'date' && value && !/^\d{2}(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\d{2}$/i.test(value)) {
       showToast('error', 'Invalid date — use DDMMMYY (e.g. 15Mar26)');
-      return;
-    }
-    if (field === 'milestone' && value && !/^https?:\/\/\S+$/.test(value)) {
-      showToast('error', 'Invalid URL');
       return;
     }
 
@@ -850,6 +863,56 @@ export function registerLabelHandlers() {
       await updateIssueBody(owner, repo, issueNumber, newBody, pat);
       if (item?.content) item.content.body = newBody;
       showToast('success', `Saved R&D ${field}`);
+      await loadWorkflowSections(itemId, item || { content: { body: newBody, repository: { nameWithOwner: repoWithOwner }, number: issueNumber, labels: { nodes: [] } } }, newBody);
+    } catch (err) {
+      showToast('error', `Failed to save: ${err.message}`);
+    }
+  };
+
+  window._addRnDMilestone = async (itemId, repoWithOwner, issueNumber) => {
+    const input = document.getElementById(`rnd-milestone-add-${itemId}`);
+    const url = input?.value.trim();
+    if (!url) return;
+    if (!/^https?:\/\/\S+$/.test(url)) {
+      showToast('error', 'Invalid URL');
+      return;
+    }
+
+    const pat = getWritePAT();
+    if (!pat) { showToast('error', 'Write token required'); return; }
+
+    const [owner, repo] = (repoWithOwner || '').split('/');
+    if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
+
+    try {
+      const item = itemRegistry.get(itemId);
+      const currentBody = item?.content?.body ?? (await fetchIssue(owner, repo, issueNumber, pat)).body ?? '';
+      const rnd = extractRnD(currentBody);
+      const newBody = setRnDMilestones(currentBody, [...rnd.milestones, url]);
+      await updateIssueBody(owner, repo, issueNumber, newBody, pat);
+      if (item?.content) item.content.body = newBody;
+      showToast('success', 'Added milestone');
+      await loadWorkflowSections(itemId, item || { content: { body: newBody, repository: { nameWithOwner: repoWithOwner }, number: issueNumber, labels: { nodes: [] } } }, newBody);
+    } catch (err) {
+      showToast('error', `Failed to save: ${err.message}`);
+    }
+  };
+
+  window._removeRnDMilestone = async (itemId, repoWithOwner, issueNumber, idx) => {
+    const pat = getWritePAT();
+    if (!pat) { showToast('error', 'Write token required'); return; }
+
+    const [owner, repo] = (repoWithOwner || '').split('/');
+    if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
+
+    try {
+      const item = itemRegistry.get(itemId);
+      const currentBody = item?.content?.body ?? (await fetchIssue(owner, repo, issueNumber, pat)).body ?? '';
+      const rnd = extractRnD(currentBody);
+      const newBody = setRnDMilestones(currentBody, rnd.milestones.filter((_, i) => i !== idx));
+      await updateIssueBody(owner, repo, issueNumber, newBody, pat);
+      if (item?.content) item.content.body = newBody;
+      showToast('success', 'Removed milestone');
       await loadWorkflowSections(itemId, item || { content: { body: newBody, repository: { nameWithOwner: repoWithOwner }, number: issueNumber, labels: { nodes: [] } } }, newBody);
     } catch (err) {
       showToast('error', `Failed to save: ${err.message}`);

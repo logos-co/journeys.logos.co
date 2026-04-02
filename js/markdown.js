@@ -60,13 +60,25 @@ function getField(section, field) {
   return m ? m[1].trim() : null;
 }
 
-/** Parse ## R&D section → { team, milestone, date } */
+function getFieldAll(section, field) {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`^-[ \\t]+${escaped}:[ \\t]*(.+?)[ \\t]*$`, 'gm');
+  const results = [];
+  let m;
+  while ((m = re.exec(section)) !== null) {
+    const val = m[1].trim();
+    if (val) results.push(val);
+  }
+  return results;
+}
+
+/** Parse ## R&D section → { team, milestones, date } */
 export function extractRnD(body) {
   const section = extractSection(body, 'R&D');
   return {
-    team:      getField(section, 'team'),
-    milestone: getField(section, 'milestone'),
-    date:      getField(section, 'date'),
+    team:       getField(section, 'team'),
+    milestones: getFieldAll(section, 'milestone'),
+    date:       getField(section, 'date'),
   };
 }
 
@@ -110,7 +122,7 @@ export function extractRedTeam(body) {
 /** @returns {'to-be-confirmed'|'confirmed'|'in-progress'|'doc-packet-delivered'} */
 export function computeRnDState(rnd, docPacketContent) {
   if (docPacketContent) return 'doc-packet-delivered';
-  if (!rnd.team || !rnd.milestone) return 'to-be-confirmed';
+  if (!rnd.team || rnd.milestones.length === 0) return 'to-be-confirmed';
   if (!rnd.date) return 'confirmed';
   return 'in-progress';
 }
@@ -183,9 +195,44 @@ function upsertSectionField(body, heading, field, value) {
   return body.slice(0, startIdx) + updated + body.slice(startIdx + sectionEnd);
 }
 
-/** Update team/milestone/date in ## R&D section. */
+/** Update team/date in ## R&D section. */
 export function setRnDField(body, field, value) {
   return upsertSectionField(body, 'R&D', field, value);
+}
+
+/** Replace all `- milestone:` lines in ## R&D with the given array. */
+export function setRnDMilestones(body, milestones) {
+  const headingRe = /^(#{1,3}\s+R&D[ \t]*\r?\n)/m;
+  const headingMatch = body ? body.match(headingRe) : null;
+
+  const milestoneLines = milestones.length > 0
+    ? milestones.map(u => `- milestone: ${u}`).join('\n')
+    : '- milestone:';
+
+  if (!headingMatch) {
+    const block = `- team:\n${milestoneLines}\n- date:\n`;
+    return `${(body || '').trimEnd()}\n\n## R&D\n${block}`;
+  }
+
+  const startIdx = headingMatch.index + headingMatch[0].length;
+  const rest = body.slice(startIdx);
+  const nextHeading = rest.match(/^#{1,3}\s/m);
+  const sectionEnd = nextHeading ? nextHeading.index : rest.length;
+  const section = rest.slice(0, sectionEnd);
+
+  // Remove all existing milestone lines
+  const cleaned = section.replace(/^-[ \t]+milestone:[ \t]*.*\n?/gm, '');
+
+  // Insert milestones before the date line, or at end of section
+  const dateLineRe = /^-[ \t]+date:/m;
+  let updated;
+  if (dateLineRe.test(cleaned)) {
+    updated = cleaned.replace(dateLineRe, milestoneLines + '\n- date:');
+  } else {
+    updated = cleaned.trimEnd() + '\n' + milestoneLines + '\n';
+  }
+
+  return body.slice(0, startIdx) + updated + body.slice(startIdx + sectionEnd);
 }
 
 /** Update ## Doc Packet link field. */
