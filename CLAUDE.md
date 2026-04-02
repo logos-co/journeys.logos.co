@@ -44,10 +44,12 @@ Journeys are GitHub issues in the connected project board. Each issue has:
 ### 3-Stakeholder State Machine
 
 ```
-R&D: to-be-confirmed → confirmed → in-progress → doc-packet-delivered
+R&D: to-be-confirmed → confirmed → in-progress → pending-doc-packet → doc-packet-delivered
 Docs: waiting → in-progress → ready-for-review → merged
 Red Team: waiting → in-progress → done
 ```
+
+`pending-doc-packet` is reached when all roadmap milestones are marked done (checked in `logos-co/roadmap` repo) but no doc packet link has been provided yet. Milestone completion is fetched at runtime from the roadmap repo via GitHub Contents API.
 
 Action label rules (auto-computed):
 - `action:rnd` when R&D ≠ doc-packet-delivered OR docs = ready-for-review

@@ -465,6 +465,70 @@ export async function fetchRefsBatch(urls, pat = '') {
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// Roadmap milestone progress
+// ---------------------------------------------------------------------------
+
+const _parentPageCache = new Map();   // parentPath → parsed content
+const _milestoneProgressCache = new Map(); // milestone URL → result
+
+/**
+ * Fetch and cache a parent roadmap page from logos-co/roadmap.
+ * Returns the decoded markdown content, or null on error.
+ */
+async function _fetchParentPage(parentPath, pat) {
+  if (_parentPageCache.has(parentPath)) return _parentPageCache.get(parentPath);
+  try {
+    const data = await restRequest(`/repos/logos-co/roadmap/contents/${parentPath}`, {}, pat);
+    const raw = atob(data.content.replace(/\n/g, ''));
+    const content = new TextDecoder().decode(Uint8Array.from(raw, c => c.charCodeAt(0)));
+    _parentPageCache.set(parentPath, content);
+    return content;
+  } catch {
+    _parentPageCache.set(parentPath, null);
+    return null;
+  }
+}
+
+/**
+ * Fetch milestone completion status from the parent roadmap page.
+ * The parent page (e.g. content/blockchain/roadmap/index.md) contains checkbox
+ * lines like `- [x] [Title](./blockchain_cryptarchia.md)`.
+ *
+ * @param {string} url - e.g. https://roadmap.logos.co/blockchain/roadmap/blockchain_cryptarchia
+ * @param {string} [pat]
+ * @returns {Promise<{title: string, done: boolean}|null>}
+ */
+export async function fetchMilestoneProgress(url, pat = '') {
+  if (!url || !url.startsWith('https://roadmap.logos.co/')) return null;
+  if (_milestoneProgressCache.has(url)) return _milestoneProgressCache.get(url);
+
+  const path = url.replace('https://roadmap.logos.co/', '').replace(/\/$/, '');
+  // path = "blockchain/roadmap/blockchain_cryptarchia"
+  const parts = path.split('/');
+  const slug = parts.pop();               // "blockchain_cryptarchia"
+  const parentDir = parts.join('/');       // "blockchain/roadmap"
+  const parentPath = `content/${parentDir}/index.md`;
+
+  const content = await _fetchParentPage(parentPath, pat);
+  if (!content) {
+    _milestoneProgressCache.set(url, null);
+    return null;
+  }
+
+  // Match checkbox line linking to this milestone: - [x] [Title](./slug.md)
+  const re = new RegExp(`^\\s*- \\[(x| )\\]\\s*\\[([^\\]]+)\\]\\(\\./${slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.md\\)`, 'm');
+  const m = content.match(re);
+  if (!m) {
+    _milestoneProgressCache.set(url, null);
+    return null;
+  }
+
+  const result = { title: m[2].trim(), done: m[1] === 'x' };
+  _milestoneProgressCache.set(url, result);
+  return result;
+}
+
 /**
  * Sync action:* labels on an issue to match the desired set.
  * Returns { added, removed } arrays.

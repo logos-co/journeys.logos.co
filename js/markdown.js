@@ -119,10 +119,11 @@ export function extractRedTeam(body) {
 
 // ─── 3-Stakeholder model: state computation ───────────────────────────────────
 
-/** @returns {'to-be-confirmed'|'confirmed'|'in-progress'|'doc-packet-delivered'} */
-export function computeRnDState(rnd, docPacketContent) {
+/** @returns {'to-be-confirmed'|'confirmed'|'in-progress'|'pending-doc-packet'|'doc-packet-delivered'} */
+export function computeRnDState(rnd, docPacketContent, allMilestonesDone = false) {
   if (docPacketContent) return 'doc-packet-delivered';
   if (!rnd.team || rnd.milestones.length === 0) return 'to-be-confirmed';
+  if (allMilestonesDone) return 'pending-doc-packet';
   if (!rnd.date) return 'confirmed';
   return 'in-progress';
 }

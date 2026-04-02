@@ -4,7 +4,7 @@
 
 import {
   addLabels, removeLabel, fetchIssue,
-  updateIssueBody, createLabel, fetchRef,
+  updateIssueBody, createLabel, fetchRef, fetchMilestoneProgress,
 } from './api.js';
 import {
   renderMarkdown, extractAllBlockedLabels, extractDescription,
@@ -170,6 +170,7 @@ const RND_COLORS = {
   'to-be-confirmed':      '#E46962',
   'confirmed':            '#6AAE7B',
   'in-progress':          '#FA7B17',
+  'pending-doc-packet':   '#34befc',
   'doc-packet-delivered': '#6AAE7B',
 };
 const DOCS_COLORS = {
@@ -187,6 +188,7 @@ const RND_STATE_LABELS = {
   'to-be-confirmed':      'To Be Confirmed',
   'confirmed':            'Confirmed',
   'in-progress':          'In Progress',
+  'pending-doc-packet':   'Pending Doc Packet',
   'doc-packet-delivered': 'Doc Packet Delivered',
 };
 const DOCS_STATE_LABELS = {
@@ -288,6 +290,45 @@ async function loadWorkflowSections(itemId, item, bodyOverride, preloadedRefs = 
   );
 
   attachWorkflowHandlers(itemId, repoWithOwner, issueNumber);
+
+  // Async-load milestone progress indicators and recompute R&D state if all done
+  loadMilestoneProgress(itemId, rnd, docPacketContent, pat);
+}
+
+async function loadMilestoneProgress(itemId, rnd, docPacketContent, pat) {
+  const results = [];
+  for (let idx = 0; idx < rnd.milestones.length; idx++) {
+    const url = rnd.milestones[idx];
+    if (!url.startsWith('https://roadmap.logos.co/')) { results.push(null); continue; }
+    const el = document.getElementById(`ms-progress-${itemId}-${idx}`);
+    const progress = await fetchMilestoneProgress(url, pat);
+    results.push(progress);
+    if (!el || !progress) continue;
+    // Show checkbox before the link
+    const cb = el.querySelector('.ms-checkbox');
+    if (cb) {
+      cb.innerHTML = progress.done
+        ? `<span style="width:0.85rem;height:0.85rem;display:inline-flex;align-items:center;justify-content:center;border-radius:2px;background:#6AAE7B;color:#fff;font-size:0.6rem;flex-shrink:0;">✓</span>`
+        : `<span style="width:0.85rem;height:0.85rem;display:inline-flex;align-items:center;justify-content:center;border-radius:2px;border:1.5px solid #b0b0b0;flex-shrink:0;"></span>`;
+    }
+    // Strikethrough the link if done
+    if (progress.done) {
+      const link = el.querySelector('a');
+      if (link) link.style.textDecoration = 'line-through';
+    }
+  }
+
+  // Recompute R&D state if all roadmap milestones are done
+  const roadmapResults = results.filter(r => r !== null);
+  if (roadmapResults.length > 0 && roadmapResults.every(r => r.done)) {
+    const newState = computeRnDState(rnd, docPacketContent, true);
+    const badgeEl = document.getElementById(`rnd-state-badge-${itemId}`);
+    if (badgeEl) {
+      const color = RND_COLORS[newState] || '#808C78';
+      const label = RND_STATE_LABELS[newState] || newState;
+      badgeEl.innerHTML = stateBadgeHtml(label, color);
+    }
+  }
 }
 
 function renderActionBanner(actualActions, expectedActions, mismatch, itemId, repoWithOwner, issueNumber) {
@@ -363,7 +404,8 @@ function renderRnDSection(itemId, rnd, rndState, repoWithOwner, issueNumber, can
         ${teamOptions}
       </select>`;
     const milestoneItems = rnd.milestones.map((url, idx) =>
-      `<div class="flex items-center gap-1 min-w-0">
+      `<div id="ms-progress-${itemId}-${idx}" class="flex items-center gap-1.5 min-w-0">
+        <span class="ms-checkbox flex-none"></span>
         <a href="${escapeHtml(url)}" target="_blank" rel="noopener"
            class="text-xs truncate hover:underline flex-1 min-w-0" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
            onclick="event.stopPropagation()">
@@ -411,12 +453,15 @@ function renderRnDSection(itemId, rnd, rndState, repoWithOwner, issueNumber, can
          </span>`
       : `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">not set</span>`;
     milestoneHtml = rnd.milestones.length > 0
-      ? `<div class="flex-1 min-w-0 space-y-1">${rnd.milestones.map(url =>
-          `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"
-              class="text-xs truncate hover:underline block" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
-              onclick="event.stopPropagation()">
-            ${escapeHtml(url.replace(/^https?:\/\//, ''))}
-          </a>`
+      ? `<div class="flex-1 min-w-0 space-y-1">${rnd.milestones.map((url, idx) =>
+          `<div id="ms-progress-${itemId}-${idx}" class="flex items-center gap-1.5 min-w-0">
+            <span class="ms-checkbox flex-none"></span>
+            <a href="${escapeHtml(url)}" target="_blank" rel="noopener"
+                class="text-xs truncate hover:underline flex-1 min-w-0" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
+                onclick="event.stopPropagation()">
+              ${escapeHtml(url.replace(/^https?:\/\//, ''))}
+            </a>
+          </div>`
         ).join('')}</div>`
       : `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">not set</span>`;
     dateHtml = rnd.date
@@ -434,7 +479,8 @@ function renderRnDSection(itemId, rnd, rndState, repoWithOwner, issueNumber, can
       ${fieldRow('Date', dateHtml)}
     </div>`;
 
-  return sectionCard('R&D', stateBadgeHtml(stateLabel, color), body);
+  const badge = `<span id="rnd-state-badge-${itemId}">${stateBadgeHtml(stateLabel, color)}</span>`;
+  return sectionCard('R&D', badge, body);
 }
 
 function renderDocPacketSection(itemId, docPacketContent, rndState, canWrite, issueUrl) {

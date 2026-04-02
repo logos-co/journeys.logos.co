@@ -11,7 +11,7 @@ import {
 import { toggleDetail, expandAll, collapseAll, getOpenCount } from './detail.js';
 import { hasWritePAT, getReadPAT, getWritePAT, getConfig } from './config.js';
 import { teamColor, statusBadge, showToast } from './app.js';
-import { fetchRefsBatch, createIssue, addItemToProject, createLabel } from './api.js';
+import { fetchRefsBatch, createIssue, addItemToProject, createLabel, fetchMilestoneProgress } from './api.js';
 
 // Active filters — persist until project reload
 let activeTeamFilter  = null; // null | team slug | 'unassigned'
@@ -532,6 +532,7 @@ const RND_COLORS = {
   'to-be-confirmed':      '#E46962',
   'confirmed':            '#FA7B17',
   'in-progress':          '#FA7B17',
+  'pending-doc-packet':   '#34befc',
   'doc-packet-delivered': '#6AAE7B',
 };
 const DOCS_COLORS = {
@@ -670,6 +671,53 @@ async function loadAllStakeholderBadges(items) {
 
   // Notify header to update fix-labels button state
   document.dispatchEvent(new CustomEvent('mismatch-count-changed'));
+
+  // Async second pass: fetch milestone progress and upgrade in-progress → pending-doc-packet
+  loadMilestoneProgressForPipeline(items, pat);
+}
+
+async function loadMilestoneProgressForPipeline(items, pat) {
+  // Collect all unique roadmap milestone URLs so parent pages are fetched in parallel
+  const allUrls = new Set();
+  for (const item of items) {
+    const rnd = extractRnD(item.content?.body || '');
+    for (const url of rnd.milestones) {
+      if (url.startsWith('https://roadmap.logos.co/')) allUrls.add(url);
+    }
+  }
+  // Pre-fetch all in parallel (parent pages get cached)
+  await Promise.all([...allUrls].map(url => fetchMilestoneProgress(url, pat)));
+
+  // Now check each item
+  for (const item of items) {
+    const body = item.content?.body || '';
+    const rnd = extractRnD(body);
+    const docPacketContent = extractDocPacket(body);
+
+    // Only relevant if confirmed or in-progress (has team + milestones, no doc packet)
+    const baseState = computeRnDState(rnd, docPacketContent, false);
+    if (baseState !== 'in-progress' && baseState !== 'confirmed') continue;
+
+    const roadmapMilestones = rnd.milestones.filter(u => u.startsWith('https://roadmap.logos.co/'));
+    if (roadmapMilestones.length === 0) continue;
+
+    const progressResults = await Promise.all(roadmapMilestones.map(u => fetchMilestoneProgress(u, pat)));
+    const resolved = progressResults.filter(r => r !== null);
+    if (resolved.length === 0 || !resolved.every(r => r.done)) continue;
+
+    // All milestones done → upgrade badge to pending-doc-packet
+    const newState = 'pending-doc-packet';
+    const el = document.getElementById(`pending-${item.id}`);
+    if (el) {
+      const { link: docsLink } = extractDocumentation(body);
+      const { tracking: redTeamLink } = extractRedTeam(body);
+      const docsRef = item._refCache?.docsRef || null;
+      const rtRef = item._refCache?.rtRef || null;
+      const docsState = computeDocsState(docsLink, docsRef);
+      const redTeamState = computeRedTeamState(redTeamLink, rtRef);
+      el.innerHTML = renderStakeholderBadges(rnd.team, newState, docsLink, docsState, redTeamLink, redTeamState);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
