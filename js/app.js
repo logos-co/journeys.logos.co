@@ -2,9 +2,9 @@
  * app.js — Main entry point, routing, state management
  */
 
-import { getConfig, saveConfig, clearConfig, isConfigured, hasPAT, hasWritePAT, isAdminMode, toggleAdminMode, getReadPAT } from './config.js';
-import { fetchProjectItems } from './api.js';
-import { renderPipeline } from './pipeline.js';
+import { getConfig, saveConfig, clearConfig, isConfigured, hasPAT, hasWritePAT, isAdminMode, toggleAdminMode, getReadPAT, getWritePAT } from './config.js';
+import { fetchProjectItems, syncActionLabels } from './api.js';
+import { renderPipeline, getMismatchCount, getMismatchedItems, updateMismatchEntry } from './pipeline.js';
 import { registerLabelHandlers, getOpenIds, clearOpenState, toggleDetail } from './detail.js';
 import { initDrag } from './drag.js';
 
@@ -23,7 +23,7 @@ let state = {
 // Utility: Team colour from name (consistent hash → hue)
 // ---------------------------------------------------------------------------
 
-const TEAM_COLOR_OVERRIDES = { 'red team': [0, 70, 55] };
+const TEAM_COLOR_OVERRIDES = { 'red team': [0, 70, 55], 'anon-comms': [220, 60, 50] };
 
 export function teamColor(teamName, alpha = 1) {
   if (!teamName) return `hsla(220, 15%, 40%, ${alpha})`;
@@ -34,10 +34,10 @@ export function teamColor(teamName, alpha = 1) {
     hash = teamName.charCodeAt(i) + ((hash << 5) - hash);
     hash |= 0;
   }
-  const hue = Math.abs(hash) % 360;
-  // Avoid muddy yellow-green range for team colours; shift slightly
-  const h = (hue + 30) % 360;
-  return `hsla(${h}, 70%, 60%, ${alpha})`;
+  // Map into safe hue band (170–330): teals, blues, purples, magentas.
+  // Avoids red/orange/green which are used for status indicators.
+  const h = 170 + (Math.abs(hash) % 160);
+  return `hsla(${h}, 55%, 55%, ${alpha})`;
 }
 
 export function teamBgClass(teamName) {
@@ -187,6 +187,7 @@ function initSettings() {
     clearOpenState();
     toggleAdminMode();
     updateHeaderBadges();
+    updateFixLabelsButton();
     // Re-render pipeline to show/hide write controls
     if (state.items.length) renderProjectView();
     // Re-expand previously open panels
@@ -195,6 +196,12 @@ function initSettings() {
       if (item) await toggleDetail(id, item, true);
     }
   });
+
+  // Fix Labels button
+  document.getElementById('btn-fix-labels')?.addEventListener('click', fixAllLabels);
+
+  // Update button when mismatch count changes (fired by pipeline.js)
+  document.addEventListener('mismatch-count-changed', () => updateFixLabelsButton());
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +246,97 @@ function updateHeaderBadges() {
     projectBadge?.classList.replace('flex', 'hidden');
     projectBadge?.classList.add('hidden');
     refreshBtn?.classList.add('hidden');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fix Labels button
+// ---------------------------------------------------------------------------
+
+function updateFixLabelsButton() {
+  const btn = document.getElementById('btn-fix-labels');
+  if (!btn) return;
+
+  const count = getMismatchCount();
+  const canWrite = hasWritePAT();
+
+  if (!hasPAT() || count === 0) {
+    btn.classList.replace('flex', 'hidden');
+    btn.classList.add('hidden');
+    return;
+  }
+
+  btn.classList.replace('hidden', 'flex');
+
+  const warnIcon = `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>`;
+
+  if (canWrite) {
+    btn.innerHTML = `${warnIcon} Fix Labels (${count})`;
+    btn.style.cssText = 'background:rgba(106,174,123,0.2);border:1px solid rgba(106,174,123,0.5);color:#4A8C5C;cursor:pointer;';
+    btn.disabled = false;
+  } else {
+    btn.innerHTML = `${warnIcon} Fix Labels (${count})`;
+    btn.style.cssText = 'background:rgba(78,99,94,0.1);border:1px solid rgba(78,99,94,0.25);color:#808C78;cursor:not-allowed;opacity:0.6;';
+    btn.disabled = true;
+  }
+}
+
+async function fixAllLabels() {
+  if (!hasWritePAT()) return;
+
+  const mismatched = getMismatchedItems();
+  if (mismatched.size === 0) return;
+
+  const btn = document.getElementById('btn-fix-labels');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Fixing…`;
+    btn.style.cssText = 'background:rgba(78,99,94,0.1);border:1px solid rgba(78,99,94,0.25);color:#808C78;cursor:wait;';
+  }
+
+  const pat = getWritePAT();
+  let fixed = 0;
+  let failed = 0;
+
+  for (const [itemId, { item, actualLabels, expectedActions }] of mismatched) {
+    const repoWithOwner = item.content?.repository?.nameWithOwner || '';
+    const issueNumber = item.content?.number || 0;
+    const [owner, repo] = repoWithOwner.split('/');
+    if (!owner || !repo || !issueNumber) continue;
+
+    try {
+      const { added, removed } = await syncActionLabels(owner, repo, issueNumber, actualLabels, expectedActions, pat);
+      // Update cached labels on the item
+      if (item.content?.labels?.nodes) {
+        item.content.labels.nodes = item.content.labels.nodes
+          .filter(l => !removed.includes(l.name))
+          .concat(added.map(name => ({ name, color: 'E46962' })));
+      }
+      updateMismatchEntry(itemId, null);
+      fixed++;
+    } catch (err) {
+      console.warn(`Failed to fix labels for ${repoWithOwner}#${issueNumber}:`, err);
+      failed++;
+    }
+  }
+
+  // Refresh the pipeline view to update badges
+  if (state.items.length) {
+    const previouslyOpen = getOpenIds();
+    clearOpenState();
+    renderProjectView();
+    for (const id of previouslyOpen) {
+      const item = state.items.find(i => i.id === id);
+      if (item) await toggleDetail(id, item, true);
+    }
+  }
+
+  updateFixLabelsButton();
+
+  if (failed > 0) {
+    showToast('warning', `Fixed ${fixed} issue(s), ${failed} failed`);
+  } else {
+    showToast('success', `Fixed labels on ${fixed} issue(s)`);
   }
 }
 

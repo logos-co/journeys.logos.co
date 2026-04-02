@@ -17,6 +17,21 @@ import { fetchRefsBatch, createIssue, addItemToProject, createLabel } from './ap
 let activeTeamFilter  = null; // null | team slug | 'unassigned'
 let activeStateFilter = null; // null | 'action:rnd' | 'action:docs' | 'action:red-team' | 'mismatch'
 
+// Global mismatch registry: itemId → { item, actualLabels, expectedActions }
+const _mismatchedItems = new Map();
+
+export function getMismatchCount() { return _mismatchedItems.size; }
+export function getMismatchedItems() { return new Map(_mismatchedItems); }
+
+export function updateMismatchEntry(itemId, entry) {
+  if (entry) {
+    _mismatchedItems.set(itemId, entry);
+  } else {
+    _mismatchedItems.delete(itemId);
+  }
+  document.dispatchEvent(new CustomEvent('mismatch-count-changed'));
+}
+
 // Project context (set during renderPipeline, used for create)
 let _projectId = null;
 let _projectOwner = null;
@@ -46,12 +61,13 @@ export function renderPipeline(container, items, projectTitle, projectId) {
 
   const columnHeader = `
     <div class="hidden md:block pointer-events-none select-none">
-      <div class="grid grid-cols-[1fr_8rem_9rem_14rem_2rem] gap-4 items-end px-4 py-1.5 text-xs font-semibold uppercase tracking-wider"
+      <div class="grid grid-cols-[1fr_8rem_9rem_12rem_9rem_2rem] gap-4 items-end px-4 py-1.5 text-xs font-semibold uppercase tracking-wider"
            style="color:#808C78;font-family:Arial,Helvetica,sans-serif;border:1px solid transparent;border-left:3px solid transparent;border-bottom:1px solid rgba(78,99,94,0.2);">
         <div>Journey</div>
         <div>Journey<br>Type</div>
         <div>Target<br>Release</div>
         <div>Progress</div>
+        <div>Action<br>Needed From</div>
         <div></div>
       </div>
     </div>`;
@@ -149,7 +165,7 @@ export function renderPipeline(container, items, projectTitle, projectId) {
   // Activate pills and apply filter if restored from URL
   if (activeTeamFilter) {
     const btn = document.querySelector(`.filter-team-pill[data-team="${CSS.escape(activeTeamFilter)}"]`);
-    if (btn) pillActivate(btn, '#4E635E');
+    if (btn) teamPillActivate(btn);
   }
   if (activeStateFilter) {
     const btn = document.querySelector(`.filter-action-pill[data-action="${CSS.escape(activeStateFilter)}"]`);
@@ -225,10 +241,19 @@ function renderFilterBar(openItems = []) {
       ${escapeHtml(label)}
     </button>`;
 
+  const teamPill = (team) => {
+    const c = teamColor(team, 1);
+    return `<button class="filter-team-pill inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all"
+            data-team="${escapeHtml(team)}" data-team-color="${escapeHtml(c)}"
+            style="border:1px solid ${teamColor(team, 0.25)};background:${teamColor(team, 0.06)};color:${teamColor(team, 0.55)};font-family:Arial,Helvetica,sans-serif;cursor:pointer;">
+      ${escapeHtml(team)}
+    </button>`;
+  };
+
   const teamRow = (teamSet.size > 0 || hasUnassigned) ? `
     <div id="team-filter-bar" class="flex items-center gap-2 flex-wrap">
       <span class="text-xs flex-none" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Team:</span>
-      ${[...teamSet].sort().map(t => pill('filter-team-pill', `data-team="${escapeHtml(t)}"`, t)).join('')}
+      ${[...teamSet].sort().map(t => teamPill(t)).join('')}
       ${hasUnassigned ? pill('filter-team-pill', 'data-team="unassigned"', 'unassigned') : ''}
     </div>` : '';
 
@@ -330,10 +355,26 @@ function pillReset(btn) {
   btn.style.borderColor  = 'rgba(78,99,94,0.3)';
 }
 
+function teamPillReset(btn) {
+  const team = btn.dataset.team;
+  if (!team || team === 'unassigned') { pillReset(btn); return; }
+  btn.style.background  = teamColor(team, 0.06);
+  btn.style.color       = teamColor(team, 0.55);
+  btn.style.borderColor = teamColor(team, 0.25);
+}
+
 function pillActivate(btn, color) {
   btn.style.background  = color + '22';
   btn.style.color       = color;
   btn.style.borderColor = color + '88';
+}
+
+function teamPillActivate(btn) {
+  const team = btn.dataset.team;
+  if (!team || team === 'unassigned') { pillActivate(btn, '#4E635E'); return; }
+  btn.style.background  = teamColor(team, 0.2);
+  btn.style.color       = teamColor(team, 1);
+  btn.style.borderColor = teamColor(team, 0.7);
 }
 
 function attachFilterHandlers(allItems) {
@@ -360,11 +401,11 @@ function attachFilterHandlers(allItems) {
       const team = btn.dataset.team;
       if (activeTeamFilter === team) {
         activeTeamFilter = null;
-        pillReset(btn);
+        teamPillReset(btn);
       } else {
-        document.querySelectorAll('.filter-team-pill').forEach(pillReset);
+        document.querySelectorAll('.filter-team-pill').forEach(teamPillReset);
         activeTeamFilter = team;
-        pillActivate(btn, '#4E635E');
+        teamPillActivate(btn);
       }
       applyFilter(allItems);
       syncFiltersToUrl();
@@ -423,7 +464,7 @@ function renderPipelineRow(item, index, canDrag, canWrite = false) {
         data-repo="${escapeHtml(repo)}"
         data-issue="${issue.number}"
         draggable="${canDrag}"
-        class="pipeline-row grid grid-cols-[1fr_auto] md:grid-cols-[1fr_8rem_9rem_14rem_2rem] gap-4 items-center px-4 py-3 rounded cursor-pointer transition-all select-none ${canDrag ? 'draggable-row' : ''}"
+        class="pipeline-row grid grid-cols-[1fr_auto] md:grid-cols-[1fr_8rem_9rem_12rem_9rem_2rem] gap-4 items-center px-4 py-3 rounded cursor-pointer transition-all select-none ${canDrag ? 'draggable-row' : ''}"
         style="background:rgba(255,255,255,0.75);border:1px solid rgba(78,99,94,0.2);border-left:3px solid ${blockedTeam ? teamColor(blockedTeam, 0.6) : 'transparent'};"
         onmouseover="this.style.background='rgba(78,99,94,0.1)'"
         onmouseout="this.style.background='rgba(255,255,255,0.75)'"
@@ -467,6 +508,9 @@ function renderPipelineRow(item, index, canDrag, canWrite = false) {
 
         <!-- Stakeholder progress column (desktop) -->
         <div id="pending-${item.id}" class="hidden md:flex items-center gap-1 flex-wrap"></div>
+
+        <!-- Action needed from column (desktop) -->
+        <div id="action-${item.id}" class="hidden md:flex items-center gap-1 flex-wrap"></div>
 
         <div class="flex items-center justify-end">
           <svg id="chevron-${item.id}" class="w-4 h-4 transition-all flex-none" style="color:#808C78;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -523,25 +567,30 @@ function stakeholderBadge(label, color, url, tooltip) {
   </${tag}>`;
 }
 
-export function renderStakeholderBadges(rndTeam, rndState, docsLink, docsState, redTeamLink, redTeamState, actionLabels, mismatch) {
-  const rndLabel = rndTeam || 'r&d';
+export function renderStakeholderBadges(rndTeam, rndState, docsLink, docsState, redTeamLink, redTeamState) {
   const rndColor = RND_COLORS[rndState] || '#808C78';
-  const rndBg    = rndTeam ? teamColor(rndTeam, 0.15) : 'rgba(255,255,255,0.7)';
-  const rndBorder= rndTeam ? teamColor(rndTeam, 0.35) : 'rgba(78,99,94,0.25)';
-  const rndText  = rndTeam ? teamColor(rndTeam, 0.9)  : '#4E635E';
-  const rndBadge = `<span class="inline-flex items-center gap-1 px-1.5 py-px rounded text-xs font-medium"
-    style="background:${rndBg};border:1px solid ${rndBorder};color:${rndText};font-family:Arial,Helvetica,sans-serif;white-space:nowrap;"
-    title="R&D: ${escapeHtml(rndState)}">
-    ${dot(rndColor)} ${escapeHtml(rndLabel)}
-  </span>`;
+  const rndBadge = stakeholderBadge('r&d', rndColor, null, `R&D: ${rndTeam || 'unassigned'} — ${rndState}`);
   const docsBadge   = stakeholderBadge('docs',     DOCS_COLORS[docsState]            || '#808C78', docsLink,     `docs: ${docsState}`);
   const rtBadge     = stakeholderBadge('red team', REDTEAM_COLORS[redTeamState]       || '#808C78', redTeamLink,  `red team: ${redTeamState}`);
 
-  const pills = actionLabels.map(l => {
-    const c = ACTION_LABEL_COLORS[l] || '#808C78';
+  return rndBadge + docsBadge + rtBadge;
+}
+
+export function renderActionColumn(rndTeam, actionLabels, mismatch) {
+  const ACTION_TEAM_MAP = {
+    'action:rnd':      rndTeam || 'r&d',
+    'action:docs':     'docs',
+    'action:red-team': 'red team',
+  };
+
+  const teams = actionLabels.map(l => {
+    const name = ACTION_TEAM_MAP[l] || l.replace('action:', '');
+    const bg    = teamColor(name, 0.12);
+    const text  = teamColor(name, 0.85);
+    const border = teamColor(name, 0.35);
     return `<span class="inline-flex items-center px-1.5 py-px rounded text-xs font-medium"
-      style="background:${c}22;color:${c};border:1px solid ${c}50;font-family:Arial,Helvetica,sans-serif;white-space:nowrap;">
-      ${escapeHtml(l.replace('action:', ''))}
+      style="background:${bg};color:${text};border:1px solid ${border};font-family:Arial,Helvetica,sans-serif;white-space:nowrap;">
+      ${escapeHtml(name)}
     </span>`;
   }).join('');
 
@@ -549,7 +598,7 @@ export function renderStakeholderBadges(rndTeam, rndState, docsLink, docsState, 
     ? `<span title="Action labels out of sync with issue state" style="color:#FA7B17;font-size:12px;cursor:help;">⚠</span>`
     : '';
 
-  return rndBadge + docsBadge + rtBadge + (pills ? `<span class="flex items-center gap-1">${pills}</span>` : '') + warnHtml;
+  return teams + warnHtml;
 }
 
 async function loadAllStakeholderBadges(items) {
@@ -575,6 +624,8 @@ async function loadAllStakeholderBadges(items) {
 
   const refResults = linksToFetch.length ? await fetchRefsBatch(linksToFetch, pat) : [];
 
+  _mismatchedItems.clear();
+
   for (const item of items) {
     const body = item.content?.body || '';
     const rnd              = extractRnD(body);
@@ -594,12 +645,20 @@ async function loadAllStakeholderBadges(items) {
 
     // Corruption detection: compare actual action labels vs expected
     const expectedActions = computeActionLabels(rndState, docsState, redTeamState);
+    const allLabels = labels.map(l => l.name);
     const mismatch = JSON.stringify([...actionLabels].sort()) !== JSON.stringify([...expectedActions].sort());
+
+    if (mismatch) {
+      _mismatchedItems.set(item.id, { item, actualLabels: allLabels, expectedActions });
+    }
 
     const el = document.getElementById(`pending-${item.id}`);
     if (el) el.innerHTML = renderStakeholderBadges(
-      rnd.team, rndState, docsLink, docsState, redTeamLink, redTeamState, actionLabels, mismatch
+      rnd.team, rndState, docsLink, docsState, redTeamLink, redTeamState
     );
+
+    const actionEl = document.getElementById(`action-${item.id}`);
+    if (actionEl) actionEl.innerHTML = renderActionColumn(rnd.team, actionLabels, mismatch);
 
     // Update filter wrapper with current action labels and mismatch flag
     const wrapper = document.getElementById(`filter-item-${item.id}`);
@@ -608,6 +667,9 @@ async function loadAllStakeholderBadges(items) {
       wrapper.dataset.mismatch = mismatch ? 'true' : 'false';
     }
   }
+
+  // Notify header to update fix-labels button state
+  document.dispatchEvent(new CustomEvent('mismatch-count-changed'));
 }
 
 // ---------------------------------------------------------------------------

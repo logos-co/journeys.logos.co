@@ -4,7 +4,7 @@
 
 import {
   addLabels, removeLabel, fetchIssue,
-  updateIssueBody, createLabel, fetchRef, syncActionLabels,
+  updateIssueBody, createLabel, fetchRef,
 } from './api.js';
 import {
   renderMarkdown, extractAllBlockedLabels, extractDescription,
@@ -14,7 +14,7 @@ import {
 } from './markdown.js';
 import { getReadPAT, getWritePAT, hasWritePAT } from './config.js';
 import { teamColor, showToast } from './app.js';
-import { renderStakeholderBadges } from './pipeline.js';
+import { renderStakeholderBadges, renderActionColumn, updateMismatchEntry } from './pipeline.js';
 
 // Track open detail panels and their item references
 const openDetails  = new Set();
@@ -288,27 +288,6 @@ async function loadWorkflowSections(itemId, item, bodyOverride, preloadedRefs = 
   );
 
   attachWorkflowHandlers(itemId, repoWithOwner, issueNumber);
-
-  // Auto-sync labels in write mode if mismatch detected
-  if (mismatch && canWrite) {
-    const writePat = getWritePAT();
-    const [owner, repo] = repoWithOwner.split('/');
-    if (writePat && owner && repo && issueNumber) {
-      try {
-        const { added, removed } = await syncActionLabels(owner, repo, issueNumber, actualLabels, expectedActions, writePat);
-        // Update cached labels on the item so the reload sees the fixed state
-        if (item?.content?.labels?.nodes) {
-          item.content.labels.nodes = item.content.labels.nodes
-            .filter(l => !removed.includes(l.name))
-            .concat(added.map(name => ({ name, color: 'E46962' })));
-        }
-        // Reload the panel, reusing already-fetched refs
-        await loadWorkflowSections(itemId, item, body, [docsRef, rtRef, docsTrackingRef]);
-      } catch (err) {
-        console.warn('Auto-sync labels failed:', err);
-      }
-    }
-  }
 }
 
 function renderActionBanner(actualActions, expectedActions, mismatch, itemId, repoWithOwner, issueNumber) {
@@ -328,10 +307,9 @@ function renderActionBanner(actualActions, expectedActions, mismatch, itemId, re
     </span>`;
   }).join('');
 
-  const canWrite = hasWritePAT();
   const warnHtml = mismatch ? `
     <span class="text-xs" style="color:#FA7B17;font-family:Arial,Helvetica,sans-serif;">
-      ⚠ Action labels out of sync${canWrite ? ' — fixing…' : ''}
+      ⚠ Action labels out of sync
     </span>` : '';
 
   return `
@@ -1024,17 +1002,25 @@ async function refreshRowStakeholderBadges(itemId, item, body, docsRef, rtRef) {
   const expectedActions = computeActionLabels(rndState, docsState, redTeamState);
   const mismatch = JSON.stringify([...actionLabels].sort()) !== JSON.stringify([...expectedActions].sort());
 
+  // Update global mismatch registry
+  updateMismatchEntry(itemId, mismatch ? { item, actualLabels: labels, expectedActions } : null);
+
   const el = document.getElementById(`pending-${itemId}`);
   if (el) {
     el.innerHTML = renderStakeholderBadges(
-      rnd.team, rndState, docsLink, docsState, redTeamLink, redTeamState,
-      actionLabels, mismatch
+      rnd.team, rndState, docsLink, docsState, redTeamLink, redTeamState
     );
   }
 
+  const actionEl = document.getElementById(`action-${itemId}`);
+  if (actionEl) actionEl.innerHTML = renderActionColumn(rnd.team, actionLabels, mismatch);
+
   // Update filter wrapper
   const wrapper = document.getElementById(`filter-item-${itemId}`);
-  if (wrapper) wrapper.dataset.actionLabels = JSON.stringify(actionLabels);
+  if (wrapper) {
+    wrapper.dataset.actionLabels = JSON.stringify(actionLabels);
+    wrapper.dataset.mismatch = mismatch ? 'true' : 'false';
+  }
 }
 
 function escapeHtml(str) {
