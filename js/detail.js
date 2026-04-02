@@ -884,6 +884,12 @@ export function registerLabelHandlers() {
     const [owner, repo] = (repoWithOwner || '').split('/');
     if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
 
+    // Visual feedback: disable input, show saving state
+    input.disabled = true;
+    input.style.opacity = '0.5';
+    const addBtn = input.nextElementSibling;
+    if (addBtn) { addBtn.disabled = true; addBtn.textContent = '…'; }
+
     try {
       const item = itemRegistry.get(itemId);
       const currentBody = item?.content?.body ?? (await fetchIssue(owner, repo, issueNumber, pat)).body ?? '';
@@ -895,6 +901,8 @@ export function registerLabelHandlers() {
       await loadWorkflowSections(itemId, item || { content: { body: newBody, repository: { nameWithOwner: repoWithOwner }, number: issueNumber, labels: { nodes: [] } } }, newBody);
     } catch (err) {
       showToast('error', `Failed to save: ${err.message}`);
+      if (input) { input.disabled = false; input.style.opacity = ''; }
+      if (addBtn) { addBtn.disabled = false; addBtn.textContent = '+'; }
     }
   };
 
@@ -904,6 +912,11 @@ export function registerLabelHandlers() {
 
     const [owner, repo] = (repoWithOwner || '').split('/');
     if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
+
+    // Visual feedback: fade out the milestone row being removed
+    const container = document.getElementById(`rnd-milestone-add-${itemId}`)?.closest('.space-y-1');
+    const row = container?.children[idx];
+    if (row) { row.style.opacity = '0.4'; row.style.pointerEvents = 'none'; }
 
     try {
       const item = itemRegistry.get(itemId);
@@ -916,6 +929,7 @@ export function registerLabelHandlers() {
       await loadWorkflowSections(itemId, item || { content: { body: newBody, repository: { nameWithOwner: repoWithOwner }, number: issueNumber, labels: { nodes: [] } } }, newBody);
     } catch (err) {
       showToast('error', `Failed to save: ${err.message}`);
+      if (row) { row.style.opacity = ''; row.style.pointerEvents = ''; }
     }
   };
 
