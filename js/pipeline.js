@@ -448,7 +448,7 @@ function renderPipelineRow(item, index, canDrag, canWrite = false) {
   const releaseLabels = labels.filter(l => /^testnet\b/i.test(l.name.trim()));
 
   const JOURNEY_COLORS = { 'gui user': 'D94F45', 'developer': '3B7CB8', 'node operator': 'C4912C' };
-  const RELEASE_COLORS = { 'testnet v0.1': '4E635E', 'testnet v0.2': '3B7CB8', 'testnet unscheduled': '808C78' };
+  const RELEASE_COLORS = { 'testnet v0.1': '4E635E', 'testnet v0.2': '2E86AB', 'testnet v0.3': 'A25C28', 'testnet unscheduled': '808C78' };
 
   const labelPill = (l) => {
     const key = l.name.trim().toLowerCase();
