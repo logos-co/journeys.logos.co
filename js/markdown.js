@@ -5,12 +5,14 @@
 /**
  * Render markdown to HTML using marked.js (available from CDN as window.marked).
  */
+// Configure marked once at module load (not per-call)
+if (typeof marked !== 'undefined') marked.setOptions({ breaks: true, gfm: true });
+
 export function renderMarkdown(text) {
   if (!text) return '<em class="text-muted" style="font-family:Arial,Helvetica,sans-serif;">No description provided.</em>';
   if (typeof marked === 'undefined') {
     return `<pre class="whitespace-pre-wrap text-sm text-warmgray">${escapeHtml(text)}</pre>`;
   }
-  marked.setOptions({ breaks: true, gfm: true });
   return marked.parse(text);
 }
 
@@ -42,10 +44,19 @@ export function extractAllBlockedLabels(labels) {
 
 // ─── 3-Stakeholder model: section parsing ────────────────────────────────────
 
+// Regex caches — avoid recompiling the same patterns hundreds of times per render
+const _sectionReCache = new Map();
+const _fieldReCache   = new Map();
+const _fieldAllReCache = new Map();
+
 function extractSection(body, heading) {
   if (!body) return '';
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`^#{1,3}\\s+${escaped}[ \\t]*\\r?\\n`, 'm');
+  let re = _sectionReCache.get(heading);
+  if (!re) {
+    const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    re = new RegExp(`^#{1,3}\\s+${escaped}[ \\t]*\\r?\\n`, 'm');
+    _sectionReCache.set(heading, re);
+  }
   const m = body.match(re);
   if (!m) return '';
   const start = m.index + m[0].length;
@@ -55,14 +66,24 @@ function extractSection(body, heading) {
 }
 
 function getField(section, field) {
-  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const m = section.match(new RegExp(`^-[ \\t]+${escaped}:[ \\t]*(.+?)[ \\t]*$`, 'm'));
+  let re = _fieldReCache.get(field);
+  if (!re) {
+    const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    re = new RegExp(`^-[ \\t]+${escaped}:[ \\t]*(.+?)[ \\t]*$`, 'm');
+    _fieldReCache.set(field, re);
+  }
+  const m = section.match(re);
   return m ? m[1].trim() : null;
 }
 
 function getFieldAll(section, field) {
-  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`^-[ \\t]+${escaped}:[ \\t]*(.+?)[ \\t]*$`, 'gm');
+  let re = _fieldAllReCache.get(field);
+  if (!re) {
+    const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    re = new RegExp(`^-[ \\t]+${escaped}:[ \\t]*(.+?)[ \\t]*$`, 'gm');
+    _fieldAllReCache.set(field, re);
+  }
+  re.lastIndex = 0; // reset for global regex reuse
   const results = [];
   let m;
   while ((m = re.exec(section)) !== null) {

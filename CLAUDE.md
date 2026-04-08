@@ -89,7 +89,7 @@ gh issue create --repo logos-co/journeys.logos.co \
 - tracking:'
 ```
 
-R&D team options: `anon-comms`, `messaging`, `core`, `storage`, `blockchain`, `zones`, `devkit`.
+R&D team options: `anon-comms`, `messaging`, `core`, `storage`, `blockchain`, `zones`, `smart-contract`, `devkit`.
 Always include a target testnet label and a journey type label. Request clarification if missing.
 After creating, add the issue to the GitHub Project board for it to appear in the app.
 

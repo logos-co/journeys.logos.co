@@ -24,20 +24,27 @@ let state = {
 // ---------------------------------------------------------------------------
 
 const TEAM_COLOR_OVERRIDES = { 'red team': [0, 70, 55], 'anon-comms': [220, 60, 50] };
+const _teamColorCache = new Map();
 
 export function teamColor(teamName, alpha = 1) {
   if (!teamName) return `hsla(220, 15%, 40%, ${alpha})`;
+  const key = `${teamName}\0${alpha}`;
+  let cached = _teamColorCache.get(key);
+  if (cached) return cached;
   const override = TEAM_COLOR_OVERRIDES[teamName.toLowerCase()];
-  if (override) return `hsla(${override[0]}, ${override[1]}%, ${override[2]}%, ${alpha})`;
-  let hash = 0;
-  for (let i = 0; i < teamName.length; i++) {
-    hash = teamName.charCodeAt(i) + ((hash << 5) - hash);
-    hash |= 0;
+  if (override) {
+    cached = `hsla(${override[0]}, ${override[1]}%, ${override[2]}%, ${alpha})`;
+  } else {
+    let hash = 0;
+    for (let i = 0; i < teamName.length; i++) {
+      hash = teamName.charCodeAt(i) + ((hash << 5) - hash);
+      hash |= 0;
+    }
+    const h = 170 + (Math.abs(hash) % 160);
+    cached = `hsla(${h}, 55%, 55%, ${alpha})`;
   }
-  // Map into safe hue band (170–330): teals, blues, purples, magentas.
-  // Avoids red/orange/green which are used for status indicators.
-  const h = 170 + (Math.abs(hash) % 160);
-  return `hsla(${h}, 55%, 55%, ${alpha})`;
+  _teamColorCache.set(key, cached);
+  return cached;
 }
 
 export function teamBgClass(teamName) {

@@ -32,6 +32,20 @@ export function updateMismatchEntry(itemId, entry) {
   document.dispatchEvent(new CustomEvent('mismatch-count-changed'));
 }
 
+// ─── Parsed-section cache (avoids re-extracting the same body 2-5× per item) ─
+function getParsedSections(item) {
+  const body = item.content?.body || '';
+  if (item._parsed && item._parsedBody === body) return item._parsed;
+  item._parsedBody = body;
+  item._parsed = {
+    rnd:       extractRnD(body),
+    docPacket: extractDocPacket(body),
+    docs:      extractDocumentation(body),
+    redTeam:   extractRedTeam(body),
+  };
+  return item._parsed;
+}
+
 // Project context (set during renderPipeline, used for create)
 let _projectId = null;
 let _projectOwner = null;
@@ -229,7 +243,7 @@ function renderFilterBar(openItems = []) {
   const teamSet = new Set();
   let hasUnassigned = false;
   for (const item of openItems) {
-    const rnd = extractRnD(item.content?.body || '');
+    const { rnd } = getParsedSections(item);
     if (rnd.team) teamSet.add(rnd.team);
     else hasUnassigned = true;
   }
@@ -427,7 +441,7 @@ function renderPipelineRow(item, index, canDrag, canWrite = false) {
   const rankLabel   = String(index + 1).padStart(2, '0');
 
   const actionLabels = labels.filter(l => l.name.startsWith('action:')).map(l => l.name);
-  const rnd          = extractRnD(issue.body || '');
+  const { rnd, docs: parsedDocs } = getParsedSections(item);
   const rndTeamSlug  = rnd.team || '';
 
   const typeLabels    = labels.filter(l => /^(gui user|developer|node operator)$/i.test(l.name.trim()));
@@ -451,7 +465,7 @@ function renderPipelineRow(item, index, canDrag, canWrite = false) {
     ? releaseLabels.map(labelPill).join(' ')
     : `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">—</span>`;
 
-  const { link: docUrl } = extractDocumentation(issue.body || '');
+  const docUrl = parsedDocs.link;
 
   return `
     <div id="filter-item-${item.id}"
@@ -605,14 +619,14 @@ export function renderActionColumn(rndTeam, actionLabels, mismatch) {
 async function loadAllStakeholderBadges(items) {
   const pat = getReadPAT();
 
-  // Collect all links to fetch
+  // Single pass: collect links to fetch and cache parsed sections per item
   const linksToFetch = [];
-  const itemLinkMap  = new Map();
+  const itemData     = new Map(); // itemId → { parsed, docsIdx, rtIdx }
 
   for (const item of items) {
-    const body = item.content?.body || '';
-    const { link: docsLink }       = extractDocumentation(body);
-    const { tracking: redTeamLink } = extractRedTeam(body);
+    const parsed = getParsedSections(item);
+    const docsLink    = parsed.docs.link;
+    const redTeamLink = parsed.redTeam.tracking;
 
     const docsIdx = docsLink ? linksToFetch.length : -1;
     if (docsLink) linksToFetch.push(docsLink);
@@ -620,7 +634,7 @@ async function loadAllStakeholderBadges(items) {
     const rtIdx = redTeamLink ? linksToFetch.length : -1;
     if (redTeamLink) linksToFetch.push(redTeamLink);
 
-    itemLinkMap.set(item.id, { docsIdx, rtIdx });
+    itemData.set(item.id, { parsed, docsIdx, rtIdx });
   }
 
   const refResults = linksToFetch.length ? await fetchRefsBatch(linksToFetch, pat) : [];
@@ -628,16 +642,12 @@ async function loadAllStakeholderBadges(items) {
   _mismatchedItems.clear();
 
   for (const item of items) {
-    const body = item.content?.body || '';
-    const rnd              = extractRnD(body);
-    const docPacketContent = extractDocPacket(body);
-    const { link: docsLink }        = extractDocumentation(body);
-    const { tracking: redTeamLink } = extractRedTeam(body);
+    const { parsed, docsIdx, rtIdx } = itemData.get(item.id);
+    const { rnd, docPacket: docPacketContent, docs: { link: docsLink }, redTeam: { tracking: redTeamLink } } = parsed;
     const labels       = item.content?.labels?.nodes || [];
     const actionLabels = labels.filter(l => l.name.startsWith('action:')).map(l => l.name);
 
     const rndState     = computeRnDState(rnd, docPacketContent);
-    const { docsIdx, rtIdx } = itemLinkMap.get(item.id) || {};
     const docsRef    = docsIdx >= 0 ? refResults[docsIdx] : null;
     const rtRef      = rtIdx   >= 0 ? refResults[rtIdx]   : null;
     item._refCache   = { docsLink, docsRef, redTeamLink, rtRef };
@@ -680,7 +690,7 @@ async function loadMilestoneProgressForPipeline(items, pat) {
   // Collect all unique roadmap milestone URLs so parent pages are fetched in parallel
   const allUrls = new Set();
   for (const item of items) {
-    const rnd = extractRnD(item.content?.body || '');
+    const { rnd } = getParsedSections(item);
     for (const url of rnd.milestones) {
       if (url.startsWith('https://roadmap.logos.co/')) allUrls.add(url);
     }
@@ -690,9 +700,7 @@ async function loadMilestoneProgressForPipeline(items, pat) {
 
   // Now check each item
   for (const item of items) {
-    const body = item.content?.body || '';
-    const rnd = extractRnD(body);
-    const docPacketContent = extractDocPacket(body);
+    const { rnd, docPacket: docPacketContent, docs, redTeam } = getParsedSections(item);
 
     // Only relevant if confirmed or in-progress (has team + milestones, no doc packet)
     const baseState = computeRnDState(rnd, docPacketContent, false);
@@ -709,13 +717,11 @@ async function loadMilestoneProgressForPipeline(items, pat) {
     const newState = 'pending-doc-packet';
     const el = document.getElementById(`pending-${item.id}`);
     if (el) {
-      const { link: docsLink } = extractDocumentation(body);
-      const { tracking: redTeamLink } = extractRedTeam(body);
       const docsRef = item._refCache?.docsRef || null;
       const rtRef = item._refCache?.rtRef || null;
-      const docsState = computeDocsState(docsLink, docsRef);
-      const redTeamState = computeRedTeamState(redTeamLink, rtRef);
-      el.innerHTML = renderStakeholderBadges(rnd.team, newState, docsLink, docsState, redTeamLink, redTeamState);
+      const docsState = computeDocsState(docs.link, docsRef);
+      const redTeamState = computeRedTeamState(redTeam.tracking, rtRef);
+      el.innerHTML = renderStakeholderBadges(rnd.team, newState, docs.link, docsState, redTeam.tracking, redTeamState);
     }
   }
 }
@@ -724,7 +730,7 @@ async function loadMilestoneProgressForPipeline(items, pat) {
 // New Journey modal
 // ---------------------------------------------------------------------------
 
-const RND_TEAMS   = ['anon-comms', 'messaging', 'core', 'storage', 'blockchain', 'zones', 'devkit'];
+const RND_TEAMS   = ['anon-comms', 'messaging', 'core', 'storage', 'blockchain', 'zones', 'smart-contract', 'devkit'];
 const JOURNEY_TYPES = [
   { name: 'developer',     label: 'Developer',      color: '3B7CB8' },
   { name: 'gui user',      label: 'GUI User',        color: 'D94F45' },

@@ -202,7 +202,7 @@ const REDTEAM_STATE_LABELS = {
   'in-progress': 'In Progress',
   'done':        'Done',
 };
-const RND_TEAMS = ['anon-comms', 'messaging', 'core', 'storage', 'blockchain', 'zones', 'devkit'];
+const RND_TEAMS = ['anon-comms', 'messaging', 'core', 'storage', 'blockchain', 'zones', 'smart-contract', 'devkit'];
 
 function issueStatusBadge(ref) {
   if (!ref || ref.state === 'error') return '';
@@ -296,22 +296,26 @@ async function loadWorkflowSections(itemId, item, bodyOverride, preloadedRefs = 
 }
 
 async function loadMilestoneProgress(itemId, rnd, docPacketContent, pat) {
-  const results = [];
-  for (let idx = 0; idx < rnd.milestones.length; idx++) {
-    const url = rnd.milestones[idx];
-    if (!url.startsWith('https://roadmap.logos.co/')) { results.push(null); continue; }
+  // Fetch all milestones in parallel instead of sequentially
+  const results = await Promise.all(
+    rnd.milestones.map(url =>
+      url.startsWith('https://roadmap.logos.co/')
+        ? fetchMilestoneProgress(url, pat)
+        : Promise.resolve(null)
+    )
+  );
+
+  // Apply DOM updates
+  for (let idx = 0; idx < results.length; idx++) {
+    const progress = results[idx];
     const el = document.getElementById(`ms-progress-${itemId}-${idx}`);
-    const progress = await fetchMilestoneProgress(url, pat);
-    results.push(progress);
     if (!el || !progress) continue;
-    // Show checkbox before the link
     const cb = el.querySelector('.ms-checkbox');
     if (cb) {
       cb.innerHTML = progress.done
         ? `<span style="width:0.85rem;height:0.85rem;display:inline-flex;align-items:center;justify-content:center;border-radius:2px;background:#6AAE7B;color:#fff;font-size:0.6rem;flex-shrink:0;">✓</span>`
         : `<span style="width:0.85rem;height:0.85rem;display:inline-flex;align-items:center;justify-content:center;border-radius:2px;border:1.5px solid #b0b0b0;flex-shrink:0;"></span>`;
     }
-    // Strikethrough the link if done
     if (progress.done) {
       const link = el.querySelector('a');
       if (link) link.style.textDecoration = 'line-through';
