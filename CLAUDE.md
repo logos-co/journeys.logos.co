@@ -36,25 +36,26 @@ Journeys are GitHub issues in the connected project board. Each issue has:
 - **Issue body** with structured sections (3-stakeholder workflow):
   - `## R&D` — fields: `- team: <name>`, `- milestone: <url>` (multiple lines allowed, one per milestone), `- date: <DDMmmYY>`
   - `## Doc Packet` — field: `- link: <url>` pointing to a logos-docs issue created from the [doc packet template](https://github.com/logos-co/logos-docs/issues/new?template=doc-packet.yml); presence of the link = delivered.
-  - `## Documentation` — fields:
-    - `- link: <url>` — the final doc URL (logos-docs issue → PR → live doc); drives the docs state machine
-    - `- tracking: <url>` — a `logos-co/logos-docs` issue used to track documentation progress (display only; does not affect docs state)
+  - `## Documentation` — fields (rendered in this order):
+    - `- tracking: <url>` — a `logos-co/logos-docs` issue used to track documentation progress; the app uses it to auto-suggest a doc PR via GitHub's `closedByPullRequestsReferences`
+    - `- pr: <url>` — the doc PR; takes precedence over `link` for state. Open PR → `in-progress`; merged PR → `merged`. Auto-suggested from tracking and confirmable in the panel.
+    - `- link: <url>` — the final doc URL (live doc page); used as a fallback driver for state when `pr` is empty
   - `## Red Team` — field: `- tracking: <url>` pointing to red team tracking issue
 
 ### 3-Stakeholder State Machine
 
 ```
 R&D: to-be-confirmed → confirmed → in-progress → pending-doc-packet → doc-packet-delivered
-Docs: waiting → in-progress → ready-for-review → merged
+Docs: waiting → in-progress → merged
 Red Team: waiting → in-progress → done
 ```
 
 `pending-doc-packet` is reached when all roadmap milestones are marked done (checked in `logos-co/roadmap` repo) but no doc packet link has been provided yet. Milestone completion is fetched at runtime from the roadmap repo via GitHub Contents API.
 
 Action label rules (auto-computed):
-- `action:rnd` when R&D ≠ doc-packet-delivered OR docs = ready-for-review
+- `action:rnd` when R&D ≠ doc-packet-delivered
 - `action:docs` when R&D = doc-packet-delivered AND docs ≠ merged
-- `action:red-team` when docs = ready-for-review AND red team ≠ done
+- `action:red-team` when docs = in-progress AND red team ≠ done
 
 ## GitHub Repos
 
@@ -82,8 +83,9 @@ gh issue create --repo logos-co/journeys.logos.co \
 - link:
 
 ## Documentation
-- link:
 - tracking:
+- pr:
+- link:
 
 ## Red Team
 - tracking:'

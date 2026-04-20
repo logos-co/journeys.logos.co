@@ -5,7 +5,16 @@
       "Bash(gh issue:*)",
       "Bash(gh label:*)",
       "WebFetch(domain:roadmap.logos.co)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh api:*)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(x.get\\(''''state''''\\), x.get\\(''''created_at''''\\), x.get\\(''''environment_url''''\\)\\) for x in d]\")",
+      "Bash(node --check js/pipeline.js)",
+      "Bash(node --check js/detail.js)",
+      "Bash(node --check js/app.js)",
+      "Bash(node --check js/markdown.js)"
     ]
   }
 }

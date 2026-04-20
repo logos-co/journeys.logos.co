@@ -3,7 +3,7 @@
  */
 
 import { getConfig, saveConfig, clearConfig, isConfigured, hasPAT, hasWritePAT, isAdminMode, toggleAdminMode, getReadPAT, getWritePAT } from './config.js';
-import { fetchProjectItems, syncActionLabels } from './api.js';
+import { fetchProjectItems, syncActionLabels, fetchIssue } from './api.js';
 import { renderPipeline, getMismatchCount, getMismatchedItems, updateMismatchEntry } from './pipeline.js';
 import { registerLabelHandlers, getOpenIds, clearOpenState, toggleDetail } from './detail.js';
 import { initDrag } from './drag.js';
@@ -304,6 +304,7 @@ async function fixAllLabels() {
   const pat = getWritePAT();
   let fixed = 0;
   let failed = 0;
+  const fixedItems = []; // items to re-fetch from GitHub for canonical state
 
   for (const [itemId, { item, actualLabels, expectedActions }] of mismatched) {
     const repoWithOwner = item.content?.repository?.nameWithOwner || '';
@@ -312,19 +313,36 @@ async function fixAllLabels() {
     if (!owner || !repo || !issueNumber) continue;
 
     try {
-      const { added, removed } = await syncActionLabels(owner, repo, issueNumber, actualLabels, expectedActions, pat);
-      // Update cached labels on the item
-      if (item.content?.labels?.nodes) {
-        item.content.labels.nodes = item.content.labels.nodes
-          .filter(l => !removed.includes(l.name))
-          .concat(added.map(name => ({ name, color: 'E46962' })));
-      }
+      await syncActionLabels(owner, repo, issueNumber, actualLabels, expectedActions, pat);
       updateMismatchEntry(itemId, null);
+      fixedItems.push({ item, owner, repo, issueNumber });
       fixed++;
     } catch (err) {
       console.warn(`Failed to fix labels for ${repoWithOwner}#${issueNumber}:`, err);
       failed++;
     }
+  }
+
+  // Re-fetch canonical issue state for each fixed item (parallel) so labels (with
+  // proper colors) and any concurrent body changes are picked up by the next render.
+  if (fixedItems.length > 0) {
+    await Promise.all(fixedItems.map(async ({ item, owner, repo, issueNumber }) => {
+      try {
+        const fresh = await fetchIssue(owner, repo, issueNumber, pat);
+        if (item.content) {
+          item.content.body = fresh.body || '';
+          item.content.labels = {
+            nodes: (fresh.labels || []).map(l => ({ name: l.name, color: l.color, description: l.description })),
+          };
+          // Invalidate parsed/section caches built from the previous body
+          delete item._parsed;
+          delete item._parsedBody;
+          delete item._refCache;
+        }
+      } catch (err) {
+        console.warn(`Failed to refresh ${owner}/${repo}#${issueNumber}:`, err);
+      }
+    }));
   }
 
   // Refresh the pipeline view to update badges

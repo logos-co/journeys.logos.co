@@ -111,24 +111,27 @@ export function extractDocPacket(body) {
 }
 
 /**
- * Parse ## Documentation section for the link and optional tracking issue.
+ * Parse ## Documentation section for the link, tracking issue, and doc PR.
  * Looks for `- link: URL` first; falls back to bare URL (backward compat).
- * Also parses `- tracking: URL` for a logos-co/logos-docs tracking issue.
+ * Also parses `- tracking: URL` (logos-co/logos-docs issue) and `- pr: URL` (doc PR).
  */
 export function extractDocumentation(body) {
   const section = extractSection(body, 'Documentation');
   const linkM = section.match(/^-[ \t]+link:[ \t]*(\S+)/m);
   const trackingM = section.match(/^-[ \t]+tracking:[ \t]*(\S+)/m);
+  const prM = section.match(/^-[ \t]+pr:[ \t]*(\S+)/m);
   let link;
   if (linkM) {
     link = linkM[1];
   } else {
-    // Backward compat: look for a bare URL, but exclude the tracking line
-    const sectionWithoutTracking = section.replace(/^-[ \t]+tracking:.*$/gm, '');
-    const urlM = sectionWithoutTracking.match(/https?:\/\/\S+/);
+    // Backward compat: look for a bare URL, but exclude the tracking and pr lines
+    const sectionWithoutMeta = section
+      .replace(/^-[ \t]+tracking:.*$/gm, '')
+      .replace(/^-[ \t]+pr:.*$/gm, '');
+    const urlM = sectionWithoutMeta.match(/https?:\/\/\S+/);
     link = urlM ? urlM[0].replace(/[)\].,;>]+$/, '') : null;
   }
-  return { link, tracking: trackingM ? trackingM[1] : null };
+  return { link, tracking: trackingM ? trackingM[1] : null, pr: prM ? prM[1] : null };
 }
 
 /** Parse ## Red Team section → { tracking } */
@@ -152,15 +155,22 @@ export function computeRnDState(rnd, docPacketContent, allMilestonesDone = false
 /**
  * @param {string|null} link
  * @param {{ type: string, state: string }|null} ref
- * @returns {'waiting'|'in-progress'|'ready-for-review'|'merged'}
+ * @param {string|null} [pr]
+ * @param {{ type: string, state: string }|null} [prRef]
+ * @returns {'waiting'|'in-progress'|'merged'}
  */
-export function computeDocsState(link, ref) {
+export function computeDocsState(link, ref, pr = null, prRef = null) {
+  // The `pr` field takes precedence: an identified doc PR means work is in progress
+  // (or merged once the PR lands).
+  if (pr) {
+    if (prRef && prRef.state === 'merged') return 'merged';
+    return 'in-progress';
+  }
   if (!link) return 'waiting';
   if (!ref || ref.state === 'error') return 'in-progress';
   if (ref.type === 'url') return 'merged';
-  if (ref.type === 'pr') return ref.state === 'merged' ? 'merged' : ref.state === 'open' ? 'ready-for-review' : 'merged';
-  // issue: closed issue means work moved on but link not updated — keep as in-progress
-  return ref.state === 'open' ? 'in-progress' : 'in-progress';
+  if (ref.type === 'pr') return ref.state === 'merged' ? 'merged' : 'in-progress';
+  return 'in-progress';
 }
 
 /**
@@ -178,11 +188,9 @@ export function computeRedTeamState(tracking, ref) {
 /** Compute which action:* labels should be present given current states. */
 export function computeActionLabels(rndState, docsState, redTeamState) {
   const labels = [];
-  // action:rnd when: doc packet not delivered (covers migration case where docs may
-  // already be merged but no doc packet was provided), OR docs ready-for-review (R&D review)
-  if (rndState !== 'doc-packet-delivered' || docsState === 'ready-for-review') labels.push('action:rnd');
+  if (rndState !== 'doc-packet-delivered') labels.push('action:rnd');
   if (rndState === 'doc-packet-delivered' && docsState !== 'merged') labels.push('action:docs');
-  if (docsState === 'ready-for-review' && redTeamState !== 'done') labels.push('action:red-team');
+  if (docsState === 'in-progress' && redTeamState !== 'done') labels.push('action:red-team');
   return labels;
 }
 
@@ -272,6 +280,11 @@ export function setDocTracking(body, tracking) {
   return upsertSectionField(body, 'Documentation', 'tracking', tracking);
 }
 
+/** Update ## Documentation pr field. */
+export function setDocPr(body, pr) {
+  return upsertSectionField(body, 'Documentation', 'pr', pr);
+}
+
 /** Update ## Red Team tracking field. */
 export function setRedTeamTracking(body, link) {
   return upsertSectionField(body, 'Red Team', 'tracking', link);
@@ -288,8 +301,9 @@ export function newIssueBody(team = '') {
 - link:${' '}
 
 ## Documentation
-- link:${' '}
 - tracking:${' '}
+- pr:${' '}
+- link:${' '}
 
 ## Red Team
 - tracking:${' '}

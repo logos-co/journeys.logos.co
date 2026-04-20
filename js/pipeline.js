@@ -552,7 +552,6 @@ const RND_COLORS = {
 const DOCS_COLORS = {
   'waiting':          '#808C78',
   'in-progress':      '#FA7B17',
-  'ready-for-review': '#34befc',
   'merged':           '#6AAE7B',
 };
 const REDTEAM_COLORS = {
@@ -626,6 +625,7 @@ async function loadAllStakeholderBadges(items) {
   for (const item of items) {
     const parsed = getParsedSections(item);
     const docsLink    = parsed.docs.link;
+    const docsPr      = parsed.docs.pr;
     const redTeamLink = parsed.redTeam.tracking;
 
     const docsIdx = docsLink ? linksToFetch.length : -1;
@@ -634,7 +634,10 @@ async function loadAllStakeholderBadges(items) {
     const rtIdx = redTeamLink ? linksToFetch.length : -1;
     if (redTeamLink) linksToFetch.push(redTeamLink);
 
-    itemData.set(item.id, { parsed, docsIdx, rtIdx });
+    const docsPrIdx = docsPr ? linksToFetch.length : -1;
+    if (docsPr) linksToFetch.push(docsPr);
+
+    itemData.set(item.id, { parsed, docsIdx, rtIdx, docsPrIdx });
   }
 
   const refResults = linksToFetch.length ? await fetchRefsBatch(linksToFetch, pat) : [];
@@ -642,16 +645,17 @@ async function loadAllStakeholderBadges(items) {
   _mismatchedItems.clear();
 
   for (const item of items) {
-    const { parsed, docsIdx, rtIdx } = itemData.get(item.id);
-    const { rnd, docPacket: docPacketContent, docs: { link: docsLink }, redTeam: { tracking: redTeamLink } } = parsed;
+    const { parsed, docsIdx, rtIdx, docsPrIdx } = itemData.get(item.id);
+    const { rnd, docPacket: docPacketContent, docs: { link: docsLink, pr: docsPr }, redTeam: { tracking: redTeamLink } } = parsed;
     const labels       = item.content?.labels?.nodes || [];
     const actionLabels = labels.filter(l => l.name.startsWith('action:')).map(l => l.name);
 
     const rndState     = computeRnDState(rnd, docPacketContent);
-    const docsRef    = docsIdx >= 0 ? refResults[docsIdx] : null;
-    const rtRef      = rtIdx   >= 0 ? refResults[rtIdx]   : null;
-    item._refCache   = { docsLink, docsRef, redTeamLink, rtRef };
-    const docsState  = computeDocsState(docsLink, docsRef);
+    const docsRef    = docsIdx   >= 0 ? refResults[docsIdx]   : null;
+    const rtRef      = rtIdx     >= 0 ? refResults[rtIdx]     : null;
+    const docsPrRef  = docsPrIdx >= 0 ? refResults[docsPrIdx] : null;
+    item._refCache   = { docsLink, docsRef, redTeamLink, rtRef, docsPr, docsPrRef };
+    const docsState  = computeDocsState(docsLink, docsRef, docsPr, docsPrRef);
     const redTeamState = computeRedTeamState(redTeamLink, rtRef);
 
     // Corruption detection: compare actual action labels vs expected
@@ -719,7 +723,8 @@ async function loadMilestoneProgressForPipeline(items, pat) {
     if (el) {
       const docsRef = item._refCache?.docsRef || null;
       const rtRef = item._refCache?.rtRef || null;
-      const docsState = computeDocsState(docs.link, docsRef);
+      const docsPrRef = item._refCache?.docsPrRef || null;
+      const docsState = computeDocsState(docs.link, docsRef, docs.pr, docsPrRef);
       const redTeamState = computeRedTeamState(redTeam.tracking, rtRef);
       el.innerHTML = renderStakeholderBadges(rnd.team, newState, docs.link, docsState, redTeam.tracking, redTeamState);
     }
@@ -823,7 +828,7 @@ function attachNewJourneyHandler(projectId) {
     if (!title) { showToast('error', 'Title is required'); return; }
 
     const pat = getWritePAT();
-    if (!pat) { showToast('error', 'Write token required'); return; }
+    if (!pat) { showToast('error', 'Switch to edit mode to save changes'); return; }
     if (!_projectOwner || !_projectRepo) { showToast('error', 'Could not determine repository'); return; }
 
     const submitBtn = document.getElementById('nj-submit');

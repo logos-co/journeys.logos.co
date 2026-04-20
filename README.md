@@ -36,7 +36,7 @@ Each journey moves through three stakeholder stages. R&D and Docs run sequential
 | Stage        | States                                                                   |
 |--------------|--------------------------------------------------------------------------|
 | **R&D**      | `to-be-confirmed` → `confirmed` → `in-progress` → `doc-packet-delivered` |
-| **Docs**     | `waiting` → `in-progress` → `ready-for-review` → `merged`                |
+| **Docs**     | `waiting` → `in-progress` → `merged`                                     |
 | **Red Team** | `waiting` → `in-progress` → `done`                                       |
 
 ```mermaid
@@ -50,7 +50,7 @@ flowchart TD
     r4 -->|"- action:rnd + action:docs"| d1
 
     subgraph DOCS[Docs]
-        d1[waiting] --> d2["in-progress"] --> d3["ready-for-review"]
+        d1[waiting] --> d2["in-progress"]
     end
 
     d4[approved and merged]
@@ -59,10 +59,8 @@ flowchart TD
         t1[waiting] --> t2["in-progress"] --> t3[done]
     end
 
-    d3 -->|"+ action:red-team"| t1
-    d3 -->|"+ action:rnd"| sme[SME review]
+    d2 -->|"+ action:red-team"| t1
     t3 -->|"- action:red-team"| d4
-    sme -->|"- action:rnd"| d4
     d4 -->|"- action:docs"| fin[journey complete]
 ```
 
@@ -72,7 +70,7 @@ flowchart TD
    - A PR assigned to the writer and linked to the issue. This is where the writing happens. The document progresses through `stub → unverified draft → verified by SME → verified by Red Team` on this PR, with the R&D SME and Red Team reviewing directly on it.
 
    When the PR is approved, Docs merges it, which automatically closes the linked issue.
-3. **Red Team** gets the `action:red-team` label as soon as the doc PR is ready for review. They dogfood the journey and review the docs PR at the same time; once dogfooding is done, so is the PR review. They close their tracking issue when done.
+3. **Red Team** gets the `action:red-team` label as soon as docs work is in progress (a doc PR exists). They dogfood the journey and review the docs PR at the same time; once dogfooding is done, so is the PR review. They close their tracking issue when done.
 
 The app tracks these states automatically by reading the issue body and checking GitHub issue/PR states. The `action:rnd`, `action:docs`, and `action:red-team` labels are kept in sync automatically; they tell each team at a glance when it's their turn. A ⚠ badge on a row means the labels are stale and will be corrected the next time the issue is opened in edit mode.
 

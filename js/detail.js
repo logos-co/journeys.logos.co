@@ -5,12 +5,13 @@
 import {
   addLabels, removeLabel, fetchIssue,
   updateIssueBody, createLabel, fetchRef, fetchMilestoneProgress,
+  fetchClosingPR,
 } from './api.js';
 import {
   renderMarkdown, extractAllBlockedLabels, extractDescription,
   extractRnD, extractDocPacket, extractDocumentation, extractRedTeam,
   computeRnDState, computeDocsState, computeRedTeamState, computeActionLabels,
-  setRnDField, setRnDMilestones, setDocPacketLink, setDocLink, setDocTracking, setRedTeamTracking,
+  setRnDField, setRnDMilestones, setDocPacketLink, setDocLink, setDocTracking, setDocPr, setRedTeamTracking,
 } from './markdown.js';
 import { getReadPAT, getWritePAT, hasWritePAT } from './config.js';
 import { teamColor, showToast } from './app.js';
@@ -176,7 +177,6 @@ const RND_COLORS = {
 const DOCS_COLORS = {
   'waiting':          '#808C78',
   'in-progress':      '#FA7B17',
-  'ready-for-review': '#34befc',
   'merged':           '#6AAE7B',
 };
 const REDTEAM_COLORS = {
@@ -194,7 +194,6 @@ const RND_STATE_LABELS = {
 const DOCS_STATE_LABELS = {
   'waiting':          'Waiting',
   'in-progress':      'In Progress',
-  'ready-for-review': 'Ready for Review',
   'merged':           'Merged',
 };
 const REDTEAM_STATE_LABELS = {
@@ -249,19 +248,20 @@ async function loadWorkflowSections(itemId, item, bodyOverride, preloadedRefs = 
 
   const rnd            = extractRnD(body);
   const docPacketContent = extractDocPacket(body);
-  const { link: docsLink, tracking: docsTracking } = extractDocumentation(body);
+  const { link: docsLink, tracking: docsTracking, pr: docsPr } = extractDocumentation(body);
   const { tracking: redTeamLink } = extractRedTeam(body);
 
   // Fetch refs — reuse preloaded refs (recursive call after label sync) or pipeline cache
   const cache = item?._refCache;
-  const [docsRef, rtRef, docsTrackingRef] = preloadedRefs ?? await Promise.all([
+  const [docsRef, rtRef, docsTrackingRef, docsPrRef] = preloadedRefs ?? await Promise.all([
     docsLink    ? (cache?.docsLink    === docsLink    ? Promise.resolve(cache.docsRef) : fetchRef(docsLink,    pat)) : Promise.resolve(null),
     redTeamLink ? (cache?.redTeamLink === redTeamLink ? Promise.resolve(cache.rtRef)   : fetchRef(redTeamLink, pat)) : Promise.resolve(null),
     docsTracking ? fetchRef(docsTracking, pat) : Promise.resolve(null),
+    docsPr ? fetchRef(docsPr, pat) : Promise.resolve(null),
   ]);
 
   const rndState     = computeRnDState(rnd, docPacketContent);
-  const docsState    = computeDocsState(docsLink, docsRef);
+  const docsState    = computeDocsState(docsLink, docsRef, docsPr, docsPrRef);
   const redTeamState = computeRedTeamState(redTeamLink, rtRef);
   const expectedActions = computeActionLabels(rndState, docsState, redTeamState);
 
@@ -284,7 +284,7 @@ async function loadWorkflowSections(itemId, item, bodyOverride, preloadedRefs = 
 
   workflowEl.innerHTML = renderWorkflowSections(
     itemId, rnd, rndState, docPacketContent,
-    docsLink, docsRef, docsState, docsTracking, docsTrackingRef,
+    docsLink, docsRef, docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef,
     redTeamLink, rtRef, redTeamState,
     repoWithOwner, issueNumber, canWrite
   );
@@ -293,6 +293,39 @@ async function loadWorkflowSections(itemId, item, bodyOverride, preloadedRefs = 
 
   // Async-load milestone progress indicators and recompute R&D state if all done
   loadMilestoneProgress(itemId, rnd, docPacketContent, pat);
+
+  // Async-fetch closing PR suggestion when we have a tracking issue but no pr yet.
+  // Show in both edit and view modes; Confirm requires a write PAT (handled in _saveDocPr).
+  if (docsTracking && !docsPr) {
+    loadDocPrSuggestion(itemId, repoWithOwner, issueNumber, docsTracking, pat);
+  }
+}
+
+async function loadDocPrSuggestion(itemId, repoWithOwner, issueNumber, trackingUrl, pat) {
+  const slot = document.getElementById(`docs-pr-suggest-${itemId}`);
+  if (!slot) return;
+  const result = await fetchClosingPR(trackingUrl, pat);
+  if (!result || !result.url) return;
+  // If user populated the input in the meantime (edit mode), skip
+  const input = document.getElementById(`docs-pr-${itemId}`);
+  if (input && input.value.trim()) return;
+  const safeUrl = escapeHtml(result.url);
+  const repoSafe = escapeHtml(repoWithOwner);
+  const num = parseInt(issueNumber, 10) || 0;
+  const action = hasWritePAT()
+    ? `<button class="text-xs px-1.5 py-0.5 rounded transition-colors flex-none"
+              style="background:#E46962;color:#fff;"
+              onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'"
+              onclick="window._saveDocPr('${itemId}','${repoSafe}',${num},'${safeUrl}')">Confirm</button>`
+    : `<span class="text-xs italic" style="color:#808C78;">Switch to edit mode to confirm this link</span>`;
+  slot.innerHTML = `<div class="flex items-center gap-2 mt-1 text-xs" style="font-family:Arial,Helvetica,sans-serif;color:#5C6B65;">
+    <span>Suggested:</span>
+    <a href="${safeUrl}" target="_blank" rel="noopener" class="truncate hover:underline" style="color:#3B7CB8;" onclick="event.stopPropagation()">${safeUrl}</a>
+    ${action}
+  </div>`;
+  // Hide the "no doc PR" fallback in view mode since we now have a suggestion.
+  const empty = document.getElementById(`docs-pr-empty-${itemId}`);
+  if (empty) empty.style.display = 'none';
 }
 
 async function loadMilestoneProgress(itemId, rnd, docPacketContent, pat) {
@@ -368,7 +401,7 @@ function renderActionBanner(actualActions, expectedActions, mismatch, itemId, re
 
 function renderWorkflowSections(
   itemId, rnd, rndState, docPacketContent,
-  docsLink, docsRef, docsState, docsTracking, docsTrackingRef,
+  docsLink, docsRef, docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef,
   redTeamLink, rtRef, redTeamState,
   repoWithOwner, issueNumber, canWrite
 ) {
@@ -381,7 +414,7 @@ function renderWorkflowSections(
   sections.push(renderDocPacketSection(itemId, docPacketContent, rndState, canWrite));
 
   // ── Documentation Section (always shown) ──
-  sections.push(renderDocumentationSection(itemId, docsLink, docsRef, docsState, docsTracking, docsTrackingRef, repoWithOwner, issueNumber, canWrite));
+  sections.push(renderDocumentationSection(itemId, docsLink, docsRef, docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef, repoWithOwner, issueNumber, canWrite));
 
   // ── Red Team Section (always shown) ──
   sections.push(renderRedTeamSection(itemId, redTeamLink, rtRef, redTeamState, repoWithOwner, issueNumber, canWrite));
@@ -533,11 +566,11 @@ function renderDocPacketSection(itemId, docPacketContent, rndState, canWrite, is
   return sectionCard('Doc Packet', stateHtml, body);
 }
 
-function renderDocumentationSection(itemId, docsLink, docsRef, docsState, docsTracking, docsTrackingRef, repoWithOwner, issueNumber, canWrite) {
+function renderDocumentationSection(itemId, docsLink, docsRef, docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef, repoWithOwner, issueNumber, canWrite) {
   const color = DOCS_COLORS[docsState] || '#808C78';
   const stateLabel = DOCS_STATE_LABELS[docsState] || docsState;
 
-  let linkHtml, trackingHtml;
+  let linkHtml, trackingHtml, prHtml;
 
   if (canWrite) {
     linkHtml = `<span class="flex-1 flex items-center gap-1 min-w-0">
@@ -564,6 +597,21 @@ function renderDocumentationSection(itemId, docsLink, docsRef, docsState, docsTr
               style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;"
               onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">✓</button>
     </span>`;
+    prHtml = `<span class="flex-1 flex flex-col gap-1 min-w-0">
+      <span class="flex items-center gap-1 min-w-0">
+        <input id="docs-pr-${itemId}" type="text"
+               value="${escapeHtml(docsPr || '')}"
+               placeholder="https://github.com/logos-co/logos-docs/pull/..."
+               data-original="${escapeHtml(docsPr || '')}"
+               class="logos-input text-xs flex-1 min-w-0 py-0.5"
+               onfocus="this.style.borderColor='#E46962'"
+               onblur="this.style.borderColor=''" />
+        <button id="docs-pr-save-${itemId}" class="hidden text-xs px-1.5 py-0.5 rounded transition-colors flex-none"
+                style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;"
+                onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">✓</button>
+      </span>
+      <span id="docs-pr-suggest-${itemId}"></span>
+    </span>`;
   } else {
     if (docsLink) {
       const title = docsRef?.title || docsLink.replace(/^https?:\/\//, '');
@@ -584,11 +632,27 @@ function renderDocumentationSection(itemId, docsLink, docsRef, docsState, docsTr
     } else {
       trackingHtml = `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">no tracking issue</span>`;
     }
+    if (docsPr) {
+      const title = docsPrRef?.title || docsPr.replace(/^https?:\/\//, '');
+      prHtml = `<span class="flex items-center gap-2 min-w-0">
+        <a href="${escapeHtml(docsPr)}" target="_blank" rel="noopener"
+           class="text-xs truncate hover:underline" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
+           onclick="event.stopPropagation()">${escapeHtml(title)}</a>
+        ${issueStatusBadge(docsPrRef)}
+      </span>`;
+    } else {
+      // Empty pr field: leave a slot for the auto-suggestion to populate, with a fallback "no doc PR".
+      prHtml = `<span class="flex-1 flex flex-col gap-1 min-w-0">
+        <span id="docs-pr-empty-${itemId}" class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">no doc PR</span>
+        <span id="docs-pr-suggest-${itemId}"></span>
+      </span>`;
+    }
   }
 
   const body = `<div class="space-y-2">
-    ${fieldRow('Final doc link', linkHtml)}
     ${fieldRow('Tracking issue', trackingHtml)}
+    ${fieldRow('Doc PR', prHtml)}
+    ${fieldRow('Final doc link', linkHtml)}
   </div>`;
 
   return sectionCard('Documentation', stateBadgeHtml(stateLabel, color), body);
@@ -728,6 +792,26 @@ function attachWorkflowHandlers(itemId, repoWithOwner, issueNumber) {
     );
   }
 
+  // Docs PR input
+  const docsPrInput = document.getElementById(`docs-pr-${itemId}`);
+  const docsPrSave  = document.getElementById(`docs-pr-save-${itemId}`);
+  if (docsPrInput && docsPrSave) {
+    const showSave = () => {
+      if (docsPrInput.value.trim() !== docsPrInput.dataset.original)
+        docsPrSave.classList.remove('hidden');
+      else
+        docsPrSave.classList.add('hidden');
+    };
+    docsPrInput.addEventListener('input', showSave);
+    docsPrInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); docsPrSave.click(); }
+      if (e.key === 'Escape') { docsPrInput.value = docsPrInput.dataset.original; docsPrSave.classList.add('hidden'); docsPrInput.blur(); }
+    });
+    docsPrSave.addEventListener('click', () =>
+      window._saveDocPr(itemId, repoWithOwner, issueNumber, docsPrInput.value.trim())
+    );
+  }
+
   // Red team tracking input
   const rtInput = document.getElementById(`redteam-link-${itemId}`);
   const rtSave  = document.getElementById(`redteam-link-save-${itemId}`);
@@ -827,7 +911,7 @@ export function registerLabelHandlers() {
   // -- Blocked label: remove --
   window._removeBlockedLabel = async (itemId, labelName) => {
     const pat = getWritePAT();
-    if (!pat) { showToast('error', 'Write token required to modify labels'); return; }
+    if (!pat) { showToast('error', 'Switch to edit mode to modify labels'); return; }
 
     const row = document.querySelector(`[data-item-id="${itemId}"]`);
     if (!row) return;
@@ -877,7 +961,7 @@ export function registerLabelHandlers() {
     if (!teamName) return;
 
     const pat = getWritePAT();
-    if (!pat) { showToast('error', 'Write token required'); return; }
+    if (!pat) { showToast('error', 'Switch to edit mode to save changes'); return; }
 
     const [owner, repo] = (repoWithOwner || '').split('/');
     if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue repository'); return; }
@@ -901,7 +985,7 @@ export function registerLabelHandlers() {
     }
 
     const pat = getWritePAT();
-    if (!pat) { showToast('error', 'Write token required'); return; }
+    if (!pat) { showToast('error', 'Switch to edit mode to save changes'); return; }
 
     const [owner, repo] = (repoWithOwner || '').split('/');
     if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
@@ -929,7 +1013,7 @@ export function registerLabelHandlers() {
     }
 
     const pat = getWritePAT();
-    if (!pat) { showToast('error', 'Write token required'); return; }
+    if (!pat) { showToast('error', 'Switch to edit mode to save changes'); return; }
 
     const [owner, repo] = (repoWithOwner || '').split('/');
     if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
@@ -958,7 +1042,7 @@ export function registerLabelHandlers() {
 
   window._removeRnDMilestone = async (itemId, repoWithOwner, issueNumber, idx) => {
     const pat = getWritePAT();
-    if (!pat) { showToast('error', 'Write token required'); return; }
+    if (!pat) { showToast('error', 'Switch to edit mode to save changes'); return; }
 
     const [owner, repo] = (repoWithOwner || '').split('/');
     if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
@@ -991,7 +1075,7 @@ export function registerLabelHandlers() {
     }
 
     const pat = getWritePAT();
-    if (!pat) { showToast('error', 'Write token required'); return; }
+    if (!pat) { showToast('error', 'Switch to edit mode to save changes'); return; }
 
     const [owner, repo] = (repoWithOwner || '').split('/');
     if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
@@ -1016,7 +1100,7 @@ export function registerLabelHandlers() {
     }
 
     const pat = getWritePAT();
-    if (!pat) { showToast('error', 'Write token required'); return; }
+    if (!pat) { showToast('error', 'Switch to edit mode to save changes'); return; }
 
     const [owner, repo] = (repoWithOwner || '').split('/');
     if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
@@ -1042,7 +1126,7 @@ export function registerLabelHandlers() {
     }
 
     const pat = getWritePAT();
-    if (!pat) { showToast('error', 'Write token required'); return; }
+    if (!pat) { showToast('error', 'Switch to edit mode to save changes'); return; }
 
     const [owner, repo] = (repoWithOwner || '').split('/');
     if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
@@ -1060,6 +1144,32 @@ export function registerLabelHandlers() {
     }
   };
 
+  // -- Documentation PR save --
+  window._saveDocPr = async (itemId, repoWithOwner, issueNumber, value) => {
+    if (value && !/^https?:\/\/github\.com\/logos-co\/logos-docs\/pull\/\d+$/.test(value)) {
+      showToast('error', 'Must be a logos-co/logos-docs PR URL');
+      return;
+    }
+
+    const pat = getWritePAT();
+    if (!pat) { showToast('error', 'Switch to edit mode to save changes'); return; }
+
+    const [owner, repo] = (repoWithOwner || '').split('/');
+    if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
+
+    try {
+      const item = itemRegistry.get(itemId);
+      const currentBody = item?.content?.body ?? (await fetchIssue(owner, repo, issueNumber, pat)).body ?? '';
+      const newBody = setDocPr(currentBody, value || null);
+      await updateIssueBody(owner, repo, issueNumber, newBody, pat);
+      if (item?.content) item.content.body = newBody;
+      showToast('success', 'Saved doc PR');
+      await loadWorkflowSections(itemId, item || { content: { body: newBody, repository: { nameWithOwner: repoWithOwner }, number: issueNumber, labels: { nodes: [] } } }, newBody);
+    } catch (err) {
+      showToast('error', `Failed to save: ${err.message}`);
+    }
+  };
+
   // -- Red team tracking save --
   window._saveRedTeamTracking = async (itemId, repoWithOwner, issueNumber, value) => {
     if (value && !/^https?:\/\/\S+$/.test(value)) {
@@ -1068,7 +1178,7 @@ export function registerLabelHandlers() {
     }
 
     const pat = getWritePAT();
-    if (!pat) { showToast('error', 'Write token required'); return; }
+    if (!pat) { showToast('error', 'Switch to edit mode to save changes'); return; }
 
     const [owner, repo] = (repoWithOwner || '').split('/');
     if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
@@ -1111,17 +1221,18 @@ async function refreshBlockedLabels(itemId, owner, repo, issueNumber, pat) {
 async function refreshRowStakeholderBadges(itemId, item, body, docsRef, rtRef) {
   const rnd            = extractRnD(body);
   const docPacketContent = extractDocPacket(body);
-  const { link: docsLink }       = extractDocumentation(body);
+  const { link: docsLink, pr: docsPr } = extractDocumentation(body);
   const { tracking: redTeamLink } = extractRedTeam(body);
   const pat = getReadPAT();
 
-  const [freshDocsRef, freshRtRef] = await Promise.all([
+  const [freshDocsRef, freshRtRef, freshDocsPrRef] = await Promise.all([
     docsLink    ? fetchRef(docsLink,    pat) : Promise.resolve(null),
     redTeamLink ? fetchRef(redTeamLink, pat) : Promise.resolve(null),
+    docsPr      ? fetchRef(docsPr,      pat) : Promise.resolve(null),
   ]);
 
   const rndState     = computeRnDState(rnd, docPacketContent);
-  const docsState    = computeDocsState(docsLink, freshDocsRef);
+  const docsState    = computeDocsState(docsLink, freshDocsRef, docsPr, freshDocsPrRef);
   const redTeamState = computeRedTeamState(redTeamLink, freshRtRef);
 
   const labels = (item.content?.labels?.nodes || []).map(l => l.name);

@@ -465,6 +465,56 @@ export async function fetchRefsBatch(urls, pat = '') {
   return results;
 }
 
+// Cache: tracking issue URL → { url, state } | null
+const _closingPrCache = new Map();
+
+/**
+ * Look up the PR that closes a logos-co/logos-docs tracking issue.
+ * Uses GitHub's GraphQL `closedByPullRequestsReferences` connection.
+ * Returns the preferred candidate ({ url, state: 'open'|'merged'|'closed' }) or null.
+ * Selection: open > merged > closed-unmerged.
+ *
+ * @param {string} trackingUrl - logos-co/logos-docs issue URL
+ * @param {string} [pat]
+ * @returns {Promise<{ url: string, state: 'open'|'merged'|'closed' }|null>}
+ */
+export async function fetchClosingPR(trackingUrl, pat = '') {
+  if (!trackingUrl) return null;
+  const m = trackingUrl.match(/^https?:\/\/github\.com\/logos-co\/logos-docs\/issues\/(\d+)$/);
+  if (!m) return null;
+  if (_closingPrCache.has(trackingUrl)) return _closingPrCache.get(trackingUrl);
+
+  const number = parseInt(m[1], 10);
+  try {
+    const data = await graphql(`
+      query($owner:String!, $repo:String!, $number:Int!) {
+        repository(owner:$owner, name:$repo) {
+          issue(number:$number) {
+            closedByPullRequestsReferences(first: 5, includeClosedPrs: true) {
+              nodes { url, state, isDraft, merged }
+            }
+          }
+        }
+      }
+    `, { owner: 'logos-co', repo: 'logos-docs', number }, pat);
+
+    const nodes = data?.repository?.issue?.closedByPullRequestsReferences?.nodes || [];
+    if (nodes.length === 0) {
+      _closingPrCache.set(trackingUrl, null);
+      return null;
+    }
+    // GraphQL `state` is 'OPEN' | 'CLOSED' | 'MERGED'. Prefer open > merged > closed-unmerged.
+    const score = n => n.state === 'OPEN' ? 0 : n.merged ? 1 : 2;
+    const best = [...nodes].sort((a, b) => score(a) - score(b))[0];
+    const state = best.state === 'OPEN' ? 'open' : best.merged ? 'merged' : 'closed';
+    const result = { url: best.url, state };
+    _closingPrCache.set(trackingUrl, result);
+    return result;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Roadmap milestone progress
 // ---------------------------------------------------------------------------
