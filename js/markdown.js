@@ -111,27 +111,14 @@ export function extractDocPacket(body) {
 }
 
 /**
- * Parse ## Documentation section for the link, tracking issue, and doc PR.
- * Looks for `- link: URL` first; falls back to bare URL (backward compat).
- * Also parses `- tracking: URL` (logos-co/logos-docs issue) and `- pr: URL` (doc PR).
+ * Parse ## Documentation section.
+ * `- tracking: URL` (logos-co/logos-docs issue) and `- pr: URL` (doc PR).
  */
 export function extractDocumentation(body) {
   const section = extractSection(body, 'Documentation');
-  const linkM = section.match(/^-[ \t]+link:[ \t]*(\S+)/m);
   const trackingM = section.match(/^-[ \t]+tracking:[ \t]*(\S+)/m);
   const prM = section.match(/^-[ \t]+pr:[ \t]*(\S+)/m);
-  let link;
-  if (linkM) {
-    link = linkM[1];
-  } else {
-    // Backward compat: look for a bare URL, but exclude the tracking and pr lines
-    const sectionWithoutMeta = section
-      .replace(/^-[ \t]+tracking:.*$/gm, '')
-      .replace(/^-[ \t]+pr:.*$/gm, '');
-    const urlM = sectionWithoutMeta.match(/https?:\/\/\S+/);
-    link = urlM ? urlM[0].replace(/[)\].,;>]+$/, '') : null;
-  }
-  return { link, tracking: trackingM ? trackingM[1] : null, pr: prM ? prM[1] : null };
+  return { tracking: trackingM ? trackingM[1] : null, pr: prM ? prM[1] : null };
 }
 
 /** Parse ## Red Team section → { tracking } */
@@ -144,8 +131,8 @@ export function extractRedTeam(body) {
 // ─── 3-Stakeholder model: state computation ───────────────────────────────────
 
 /** @returns {'to-be-confirmed'|'confirmed'|'in-progress'|'pending-doc-packet'|'doc-packet-delivered'} */
-export function computeRnDState(rnd, docPacketContent, allMilestonesDone = false) {
-  if (docPacketContent) return 'doc-packet-delivered';
+export function computeRnDState(rnd, docPacketLink, allMilestonesDone = false) {
+  if (docPacketLink) return 'doc-packet-delivered';
   if (!rnd.team || rnd.milestones.length === 0) return 'to-be-confirmed';
   if (allMilestonesDone) return 'pending-doc-packet';
   if (!rnd.date) return 'confirmed';
@@ -153,24 +140,13 @@ export function computeRnDState(rnd, docPacketContent, allMilestonesDone = false
 }
 
 /**
- * @param {string|null} link
- * @param {{ type: string, state: string }|null} ref
- * @param {string|null} [pr]
- * @param {{ type: string, state: string }|null} [prRef]
+ * @param {string|null} pr    - doc PR URL
+ * @param {{ state: string }|null} [prRef] - resolved PR ref (state: 'open'|'merged'|...)
  * @returns {'waiting'|'in-progress'|'merged'}
  */
-export function computeDocsState(link, ref, pr = null, prRef = null) {
-  // The `pr` field takes precedence: an identified doc PR means work is in progress
-  // (or merged once the PR lands).
-  if (pr) {
-    if (prRef && prRef.state === 'merged') return 'merged';
-    return 'in-progress';
-  }
-  if (!link) return 'waiting';
-  if (!ref || ref.state === 'error') return 'in-progress';
-  if (ref.type === 'url') return 'merged';
-  if (ref.type === 'pr') return ref.state === 'merged' ? 'merged' : 'in-progress';
-  return 'in-progress';
+export function computeDocsState(pr, prRef = null) {
+  if (!pr) return 'waiting';
+  return prRef?.state === 'merged' ? 'merged' : 'in-progress';
 }
 
 /**
@@ -270,11 +246,6 @@ export function setDocPacketLink(body, link) {
   return upsertSectionField(body, 'Doc Packet', 'link', link);
 }
 
-/** Update ## Documentation link field. */
-export function setDocLink(body, link) {
-  return upsertSectionField(body, 'Documentation', 'link', link);
-}
-
 /** Update ## Documentation tracking field. */
 export function setDocTracking(body, tracking) {
   return upsertSectionField(body, 'Documentation', 'tracking', tracking);
@@ -303,7 +274,6 @@ export function newIssueBody(team = '') {
 ## Documentation
 - tracking:${' '}
 - pr:${' '}
-- link:${' '}
 
 ## Red Team
 - tracking:${' '}

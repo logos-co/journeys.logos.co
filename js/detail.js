@@ -11,11 +11,10 @@ import {
   renderMarkdown, extractAllBlockedLabels, extractDescription,
   extractRnD, extractDocPacket, extractDocumentation, extractRedTeam,
   computeRnDState, computeDocsState, computeRedTeamState, computeActionLabels,
-  setRnDField, setRnDMilestones, setDocPacketLink, setDocLink, setDocTracking, setDocPr, setRedTeamTracking,
+  setRnDField, setRnDMilestones, setDocPacketLink, setDocTracking, setDocPr, setRedTeamTracking,
 } from './markdown.js';
 import { getReadPAT, getWritePAT, hasWritePAT } from './config.js';
 import { teamColor, showToast } from './app.js';
-import { renderStakeholderBadges, renderActionColumn, updateMismatchEntry } from './pipeline.js';
 
 // Track open detail panels and their item references
 const openDetails  = new Set();
@@ -247,21 +246,20 @@ async function loadWorkflowSections(itemId, item, bodyOverride, preloadedRefs = 
   const pat       = getReadPAT();
 
   const rnd            = extractRnD(body);
-  const docPacketContent = extractDocPacket(body);
-  const { link: docsLink, tracking: docsTracking, pr: docsPr } = extractDocumentation(body);
+  const docPacketLink  = extractDocPacket(body);
+  const { tracking: docsTracking, pr: docsPr } = extractDocumentation(body);
   const { tracking: redTeamLink } = extractRedTeam(body);
 
-  // Fetch refs — reuse preloaded refs (recursive call after label sync) or pipeline cache
+  // Fetch refs — reuse preloaded refs (recursive call after label sync) or pipeline cache.
   const cache = item?._refCache;
-  const [docsRef, rtRef, docsTrackingRef, docsPrRef] = preloadedRefs ?? await Promise.all([
-    docsLink    ? (cache?.docsLink    === docsLink    ? Promise.resolve(cache.docsRef) : fetchRef(docsLink,    pat)) : Promise.resolve(null),
-    redTeamLink ? (cache?.redTeamLink === redTeamLink ? Promise.resolve(cache.rtRef)   : fetchRef(redTeamLink, pat)) : Promise.resolve(null),
+  const [rtRef, docsTrackingRef, docsPrRef] = preloadedRefs ?? await Promise.all([
+    redTeamLink ? (cache?.redTeamLink === redTeamLink ? Promise.resolve(cache.rtRef) : fetchRef(redTeamLink, pat)) : Promise.resolve(null),
     docsTracking ? fetchRef(docsTracking, pat) : Promise.resolve(null),
-    docsPr ? fetchRef(docsPr, pat) : Promise.resolve(null),
+    docsPr      ? (cache?.docsPr      === docsPr      ? Promise.resolve(cache.docsPrRef) : fetchRef(docsPr,      pat)) : Promise.resolve(null),
   ]);
 
-  const rndState     = computeRnDState(rnd, docPacketContent);
-  const docsState    = computeDocsState(docsLink, docsRef, docsPr, docsPrRef);
+  const rndState     = computeRnDState(rnd, docPacketLink);
+  const docsState    = computeDocsState(docsPr, docsPrRef);
   const redTeamState = computeRedTeamState(redTeamLink, rtRef);
   const expectedActions = computeActionLabels(rndState, docsState, redTeamState);
 
@@ -283,8 +281,8 @@ async function loadWorkflowSections(itemId, item, bodyOverride, preloadedRefs = 
   if (!workflowEl) return;
 
   workflowEl.innerHTML = renderWorkflowSections(
-    itemId, rnd, rndState, docPacketContent,
-    docsLink, docsRef, docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef,
+    itemId, rnd, rndState, docPacketLink,
+    docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef,
     redTeamLink, rtRef, redTeamState,
     repoWithOwner, issueNumber, canWrite
   );
@@ -292,7 +290,7 @@ async function loadWorkflowSections(itemId, item, bodyOverride, preloadedRefs = 
   attachWorkflowHandlers(itemId, repoWithOwner, issueNumber);
 
   // Async-load milestone progress indicators and recompute R&D state if all done
-  loadMilestoneProgress(itemId, rnd, docPacketContent, pat);
+  loadMilestoneProgress(itemId, rnd, docPacketLink, pat);
 
   // Async-fetch closing PR suggestion when we have a tracking issue but no pr yet.
   // Show in both edit and view modes; Confirm requires a write PAT (handled in _saveDocPr).
@@ -328,7 +326,7 @@ async function loadDocPrSuggestion(itemId, repoWithOwner, issueNumber, trackingU
   if (empty) empty.style.display = 'none';
 }
 
-async function loadMilestoneProgress(itemId, rnd, docPacketContent, pat) {
+async function loadMilestoneProgress(itemId, rnd, docPacketLink, pat) {
   // Fetch all milestones in parallel instead of sequentially
   const results = await Promise.all(
     rnd.milestones.map(url =>
@@ -358,7 +356,7 @@ async function loadMilestoneProgress(itemId, rnd, docPacketContent, pat) {
   // Recompute R&D state if all roadmap milestones are done
   const roadmapResults = results.filter(r => r !== null);
   if (roadmapResults.length > 0 && roadmapResults.every(r => r.done)) {
-    const newState = computeRnDState(rnd, docPacketContent, true);
+    const newState = computeRnDState(rnd, docPacketLink, true);
     const badgeEl = document.getElementById(`rnd-state-badge-${itemId}`);
     if (badgeEl) {
       const color = RND_COLORS[newState] || '#808C78';
@@ -400,8 +398,8 @@ function renderActionBanner(actualActions, expectedActions, mismatch, itemId, re
 }
 
 function renderWorkflowSections(
-  itemId, rnd, rndState, docPacketContent,
-  docsLink, docsRef, docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef,
+  itemId, rnd, rndState, docPacketLink,
+  docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef,
   redTeamLink, rtRef, redTeamState,
   repoWithOwner, issueNumber, canWrite
 ) {
@@ -411,10 +409,10 @@ function renderWorkflowSections(
   sections.push(renderRnDSection(itemId, rnd, rndState, repoWithOwner, issueNumber, canWrite));
 
   // ── Doc Packet Section (always shown) ──
-  sections.push(renderDocPacketSection(itemId, docPacketContent, rndState, canWrite));
+  sections.push(renderDocPacketSection(itemId, docPacketLink, rndState, canWrite));
 
   // ── Documentation Section (always shown) ──
-  sections.push(renderDocumentationSection(itemId, docsLink, docsRef, docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef, repoWithOwner, issueNumber, canWrite));
+  sections.push(renderDocumentationSection(itemId, docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef, repoWithOwner, issueNumber, canWrite));
 
   // ── Red Team Section (always shown) ──
   sections.push(renderRedTeamSection(itemId, redTeamLink, rtRef, redTeamState, repoWithOwner, issueNumber, canWrite));
@@ -520,13 +518,13 @@ function renderRnDSection(itemId, rnd, rndState, repoWithOwner, issueNumber, can
   return sectionCard('R&D', badge, body);
 }
 
-function renderDocPacketSection(itemId, docPacketContent, rndState, canWrite, issueUrl) {
-  const isDelivered = !!docPacketContent;
+function renderDocPacketSection(itemId, docPacketLink, rndState, canWrite, issueUrl) {
+  const isDelivered = !!docPacketLink;
 
   let linkHtml;
   if (isDelivered) {
-    const title = docPacketContent.replace(/^https?:\/\//, '');
-    linkHtml = `<a href="${escapeHtml(docPacketContent)}" target="_blank" rel="noopener"
+    const title = docPacketLink.replace(/^https?:\/\//, '');
+    linkHtml = `<a href="${escapeHtml(docPacketLink)}" target="_blank" rel="noopener"
        class="text-xs truncate hover:underline" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
        onclick="event.stopPropagation()">${escapeHtml(title)}</a>`;
   } else {
@@ -542,9 +540,9 @@ function renderDocPacketSection(itemId, docPacketContent, rndState, canWrite, is
   if (canWrite) {
     editHtml = `<span class="flex items-center gap-1 mt-2">
       <input id="docpacket-link-${itemId}" type="text"
-             value="${escapeHtml(docPacketContent || '')}"
+             value="${escapeHtml(docPacketLink || '')}"
              placeholder="https://github.com/logos-co/logos-docs/issues/..."
-             data-original="${escapeHtml(docPacketContent || '')}"
+             data-original="${escapeHtml(docPacketLink || '')}"
              class="logos-input text-xs flex-1 min-w-0 py-0.5"
              onfocus="this.style.borderColor='#E46962'"
              onblur="this.style.borderColor=''" />
@@ -566,25 +564,13 @@ function renderDocPacketSection(itemId, docPacketContent, rndState, canWrite, is
   return sectionCard('Doc Packet', stateHtml, body);
 }
 
-function renderDocumentationSection(itemId, docsLink, docsRef, docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef, repoWithOwner, issueNumber, canWrite) {
+function renderDocumentationSection(itemId, docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef, repoWithOwner, issueNumber, canWrite) {
   const color = DOCS_COLORS[docsState] || '#808C78';
   const stateLabel = DOCS_STATE_LABELS[docsState] || docsState;
 
-  let linkHtml, trackingHtml, prHtml;
+  let trackingHtml, prHtml;
 
   if (canWrite) {
-    linkHtml = `<span class="flex-1 flex items-center gap-1 min-w-0">
-      <input id="docs-link-${itemId}" type="text"
-             value="${escapeHtml(docsLink || '')}"
-             placeholder="https://github.com/logos-co/logos-docs/..."
-             data-original="${escapeHtml(docsLink || '')}"
-             class="logos-input text-xs flex-1 min-w-0 py-0.5"
-             onfocus="this.style.borderColor='#E46962'"
-             onblur="this.style.borderColor=''" />
-      <button id="docs-link-save-${itemId}" class="hidden text-xs px-1.5 py-0.5 rounded transition-colors flex-none"
-              style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;"
-              onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">✓</button>
-    </span>`;
     trackingHtml = `<span class="flex-1 flex items-center gap-1 min-w-0">
       <input id="docs-tracking-${itemId}" type="text"
              value="${escapeHtml(docsTracking || '')}"
@@ -613,14 +599,6 @@ function renderDocumentationSection(itemId, docsLink, docsRef, docsState, docsTr
       <span id="docs-pr-suggest-${itemId}"></span>
     </span>`;
   } else {
-    if (docsLink) {
-      const title = docsRef?.title || docsLink.replace(/^https?:\/\//, '');
-      linkHtml = `<a href="${escapeHtml(docsLink)}" target="_blank" rel="noopener"
-         class="text-xs truncate hover:underline" style="color:#3B7CB8;font-family:Arial,Helvetica,sans-serif;"
-         onclick="event.stopPropagation()">${escapeHtml(title)}</a>`;
-    } else {
-      linkHtml = `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">no link</span>`;
-    }
     if (docsTracking) {
       const title = docsTrackingRef?.title || docsTracking.replace(/^https?:\/\//, '');
       trackingHtml = `<span class="flex items-center gap-2 min-w-0">
@@ -652,7 +630,6 @@ function renderDocumentationSection(itemId, docsLink, docsRef, docsState, docsTr
   const body = `<div class="space-y-2">
     ${fieldRow('Tracking issue', trackingHtml)}
     ${fieldRow('Doc PR', prHtml)}
-    ${fieldRow('Final doc link', linkHtml)}
   </div>`;
 
   return sectionCard('Documentation', stateBadgeHtml(stateLabel, color), body);
@@ -749,26 +726,6 @@ function attachWorkflowHandlers(itemId, repoWithOwner, issueNumber) {
     });
     dpSave.addEventListener('click', () =>
       window._saveDocPacketLink(itemId, repoWithOwner, issueNumber, dpInput.value.trim())
-    );
-  }
-
-  // Docs link input
-  const docsInput = document.getElementById(`docs-link-${itemId}`);
-  const docsSave  = document.getElementById(`docs-link-save-${itemId}`);
-  if (docsInput && docsSave) {
-    const showSave = () => {
-      if (docsInput.value.trim() !== docsInput.dataset.original)
-        docsSave.classList.remove('hidden');
-      else
-        docsSave.classList.add('hidden');
-    };
-    docsInput.addEventListener('input', showSave);
-    docsInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); docsSave.click(); }
-      if (e.key === 'Escape') { docsInput.value = docsInput.dataset.original; docsSave.classList.add('hidden'); docsInput.blur(); }
-    });
-    docsSave.addEventListener('click', () =>
-      window._saveDocLink(itemId, repoWithOwner, issueNumber, docsInput.value.trim())
     );
   }
 
@@ -1093,31 +1050,6 @@ export function registerLabelHandlers() {
     }
   };
 
-  window._saveDocLink = async (itemId, repoWithOwner, issueNumber, value) => {
-    if (value && !/^https?:\/\/\S+$/.test(value)) {
-      showToast('error', 'Invalid URL');
-      return;
-    }
-
-    const pat = getWritePAT();
-    if (!pat) { showToast('error', 'Switch to edit mode to save changes'); return; }
-
-    const [owner, repo] = (repoWithOwner || '').split('/');
-    if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue'); return; }
-
-    try {
-      const item = itemRegistry.get(itemId);
-      const currentBody = item?.content?.body ?? (await fetchIssue(owner, repo, issueNumber, pat)).body ?? '';
-      const newBody = setDocLink(currentBody, value || null);
-      await updateIssueBody(owner, repo, issueNumber, newBody, pat);
-      if (item?.content) item.content.body = newBody;
-      showToast('success', 'Saved documentation link');
-      await loadWorkflowSections(itemId, item || { content: { body: newBody, repository: { nameWithOwner: repoWithOwner }, number: issueNumber, labels: { nodes: [] } } }, newBody);
-    } catch (err) {
-      showToast('error', `Failed to save: ${err.message}`);
-    }
-  };
-
   // -- Documentation tracking save --
   window._saveDocTracking = async (itemId, repoWithOwner, issueNumber, value) => {
     if (value && !/^https?:\/\/github\.com\/logos-co\/logos-docs\/issues\/\d+$/.test(value)) {
@@ -1215,49 +1147,6 @@ async function refreshBlockedLabels(itemId, owner, repo, issueNumber, pat) {
       (canWrite ? renderAddLabelButton(fakeItem) : '');
   } catch (err) {
     console.warn('Failed to refresh labels:', err);
-  }
-}
-
-async function refreshRowStakeholderBadges(itemId, item, body, docsRef, rtRef) {
-  const rnd            = extractRnD(body);
-  const docPacketContent = extractDocPacket(body);
-  const { link: docsLink, pr: docsPr } = extractDocumentation(body);
-  const { tracking: redTeamLink } = extractRedTeam(body);
-  const pat = getReadPAT();
-
-  const [freshDocsRef, freshRtRef, freshDocsPrRef] = await Promise.all([
-    docsLink    ? fetchRef(docsLink,    pat) : Promise.resolve(null),
-    redTeamLink ? fetchRef(redTeamLink, pat) : Promise.resolve(null),
-    docsPr      ? fetchRef(docsPr,      pat) : Promise.resolve(null),
-  ]);
-
-  const rndState     = computeRnDState(rnd, docPacketContent);
-  const docsState    = computeDocsState(docsLink, freshDocsRef, docsPr, freshDocsPrRef);
-  const redTeamState = computeRedTeamState(redTeamLink, freshRtRef);
-
-  const labels = (item.content?.labels?.nodes || []).map(l => l.name);
-  const actionLabels = labels.filter(l => l.startsWith('action:'));
-  const expectedActions = computeActionLabels(rndState, docsState, redTeamState);
-  const mismatch = JSON.stringify([...actionLabels].sort()) !== JSON.stringify([...expectedActions].sort());
-
-  // Update global mismatch registry
-  updateMismatchEntry(itemId, mismatch ? { item, actualLabels: labels, expectedActions } : null);
-
-  const el = document.getElementById(`pending-${itemId}`);
-  if (el) {
-    el.innerHTML = renderStakeholderBadges(
-      rnd.team, rndState, docsLink, docsState, redTeamLink, redTeamState
-    );
-  }
-
-  const actionEl = document.getElementById(`action-${itemId}`);
-  if (actionEl) actionEl.innerHTML = renderActionColumn(rnd.team, actionLabels, mismatch);
-
-  // Update filter wrapper
-  const wrapper = document.getElementById(`filter-item-${itemId}`);
-  if (wrapper) {
-    wrapper.dataset.actionLabels = JSON.stringify(actionLabels);
-    wrapper.dataset.mismatch = mismatch ? 'true' : 'false';
   }
 }
 
