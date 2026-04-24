@@ -34,6 +34,38 @@ As a first step, Logos R&D Leads need to:
 
 Each journey has a single `status:<phase>` label and one or more `blocked-by:<team>` labels — both auto-managed by the app based on what's in the issue body. The whole lifecycle is one linear sequence:
 
+```mermaid
+flowchart TD
+    start([journey created]) --> s1
+
+    subgraph RND[Blocked by R&D]
+        s1[confirm-roadmap] --> s2[confirm-date] --> s3[rnd-in-progress]
+        s3 -->|date passes| s3o[rnd-overdue]
+        s3  --> s4[waiting-for-doc-packet]
+        s3o --> s4
+    end
+
+    s4 -->|- link: set| s5
+
+    subgraph DOCS[Blocked by Docs]
+        s5[doc-packet-delivered]
+    end
+
+    s5 -->|- pr: set manually| s6
+
+    subgraph REVIEW[Blocked by R&D SME + Red Team]
+        s6[doc-ready-for-review]
+    end
+
+    s6 -->|PR merged| s7
+
+    subgraph RT[Blocked by Red Team]
+        s7[doc-merged]
+    end
+
+    s7 -->|red team tracking closed| fin([completed])
+```
+
 | `status:*`                      | Next step (who does it)                                                                     | Blocked by                  |
 |---------------------------------|---------------------------------------------------------------------------------------------|-----------------------------|
 | `status:confirm-roadmap`        | **R&D lead**: set `- team:` and a `- milestone:` URL in the issue body                      | `blocked-by:rnd` (or team)  |
