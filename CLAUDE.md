@@ -31,30 +31,39 @@ Journeys are GitHub issues in the connected project board. Each issue has:
 
 - **Labels** for journey type: `gui user`, `developer`, `node operator`
 - **Labels** for target release: `testnet v0.1`, `testnet v0.2`, etc. (regex: `/^testnet\b/i`)
-- **Labels** for blocked status: `blocked:teamname` (regex: `/^blocked:/i`)
-- **Labels** for action required: `action:rnd`, `action:docs`, `action:red-team` — auto-managed by the app
-- **Issue body** with structured sections (3-stakeholder workflow):
+- **Labels** for lifecycle status: exactly one `status:<phase>` per journey — auto-managed by the app
+- **Labels** for who is blocking progress: one or more `blocked-by:<team>` labels — auto-managed when derived from the lifecycle, manually added for external blockers
+- **Issue body** with structured sections:
   - `## R&D` — fields: `- team: <name>`, `- milestone: <url>` (multiple lines allowed, one per milestone), `- date: <DDMmmYY>`
   - `## Doc Packet` — field: `- link: <url>` pointing to a logos-docs issue created from the [doc packet template](https://github.com/logos-co/logos-docs/issues/new?template=doc-packet.yml); presence of the link = delivered.
-  - `## Documentation` — fields (rendered in this order):
-    - `- tracking: <url>` — a `logos-co/logos-docs` issue used to track documentation progress; the app uses it to auto-suggest a doc PR via GitHub's `closedByPullRequestsReferences`
-    - `- pr: <url>` — the doc PR. Drives docs state: open PR → `in-progress`; merged PR → `merged`. Auto-suggested from tracking and confirmable in the panel.
+  - `## Documentation` — fields:
+    - `- tracking: <url>` — a `logos-co/logos-docs` issue used to track documentation progress
+    - `- pr: <url>` — the doc PR, **manually added by the docs team** as an explicit "ready for review" signal. No auto-discovery.
   - `## Red Team` — field: `- tracking: <url>` pointing to red team tracking issue
 
-### 3-Stakeholder State Machine
+### Flat Lifecycle State Machine
 
-```
-R&D: to-be-confirmed → confirmed → in-progress → pending-doc-packet → doc-packet-delivered
-Docs: waiting → in-progress → merged
-Red Team: waiting → in-progress → done
-```
+One `status:<phase>` label per journey, one or more `blocked-by:<team>` labels. Both auto-managed by the app.
 
-`pending-doc-packet` is reached when all roadmap milestones are marked done (checked in `logos-co/roadmap` repo) but no doc packet link has been provided yet. Milestone completion is fetched at runtime from the roadmap repo via GitHub Contents API.
+| `status:*` label               | Next step (who does it) — and the body change that advances the phase                      | Auto-derived `blocked-by:*`     |
+|-------------------------------|---------------------------------------------------------------------------------------------|---------------------------------|
+| `status:confirm-roadmap`       | **R&D lead**: set `- team:` and a `- milestone:` URL in the issue body                      | `blocked-by:rnd` (or rnd-<team>)|
+| `status:confirm-date`          | **R&D lead**: add `- date:` (DDMmmYY)                                                       | `blocked-by:rnd-<team>`         |
+| `status:rnd-in-progress`       | **R&D**: deliver the roadmap milestones (auto-advances when all are ticked in [roadmap.logos.co](https://roadmap.logos.co) — source is `logos-co/roadmap`) | `blocked-by:rnd-<team>` |
+| `status:rnd-overdue`           | **R&D**: deliver the milestones — target date passed; update the date or close them         | `blocked-by:rnd-<team>`         |
+| `status:waiting-for-doc-packet`| **R&D**: file a doc packet issue, paste URL into `## Doc Packet - link:`                    | `blocked-by:rnd-<team>`         |
+| `status:doc-packet-delivered`  | **Docs**: open tracking issue (`## Documentation - tracking:`), write the doc, and when the doc PR is ready for review paste its URL into `## Documentation - pr:` | `blocked-by:docs`               |
+| `status:doc-ready-for-review`  | **R&D and Red Team**: review the doc PR. **Docs**: merge the PR once both have approved     | `blocked-by:red-team` + `blocked-by:rnd-<team>` |
+| `status:doc-merged`            | **Red Team**: finish dogfooding, close `## Red Team - tracking:` when done                  | `blocked-by:red-team`           |
+| `status:completed`             | Nothing — journey is done                                                                   | —                               |
 
-Action label rules (auto-computed):
-- `action:rnd` when R&D ≠ doc-packet-delivered
-- `action:docs` when R&D = doc-packet-delivered AND docs ≠ merged
-- `action:red-team` when docs = in-progress AND red team ≠ done
+**Precedence rule:** when the `## Documentation - pr:` field is set, the status advances to `doc-ready-for-review` / `doc-merged` / `completed` *regardless* of the R&D body fields. Upstream R&D checks only gate the pre-doc-packet phases. (Regression #31.)
+
+R&D granularity: `<team>` ∈ `anon-comms`, `messaging`, `core`, `storage`, `blockchain`, `zones`, `smart-contract`, `devkit`. If a team is not yet assigned, the label is `blocked-by:rnd`.
+
+Milestone completion is fetched at runtime from the `logos-co/roadmap` repo via the GitHub Contents API; overdue detection uses the `- date:` field parsed as `DDMmmYY`.
+
+Label drift (e.g. after body edits) is detected in-app; click **Fix Labels** in the header to reconcile. Legacy `action:*` and `blocked:<team>` labels are automatically removed/migrated during reconciliation.
 
 ## GitHub Repos
 
@@ -72,7 +81,8 @@ gh issue create --repo logos-co/journeys.logos.co \
   --title "Journey title" \
   --label "developer" \
   --label "testnet v0.1" \
-  --label "action:rnd" \
+  --label "status:confirm-roadmap" \
+  --label "blocked-by:rnd-zones" \
   --body '## R&D
 - team: zones
 - milestone:
@@ -91,13 +101,13 @@ gh issue create --repo logos-co/journeys.logos.co \
 
 R&D team options: `anon-comms`, `messaging`, `core`, `storage`, `blockchain`, `zones`, `smart-contract`, `devkit`.
 Always include a target testnet label and a journey type label. Request clarification if missing.
-After creating, add the issue to the GitHub Project board for it to appear in the app.
+After creating, add the issue to the "Logos Journeys" project board (project #12, owner `logos-co`) so it appears in the app. This step is mandatory, always run it:
+
+```bash
+gh project item-add 12 --owner logos-co --url <issue-url>
+```
 
 Journey type label colors: gui user=`D94F45`, developer=`3B7CB8`, node operator=`C4912C`.
-
-## Migration
-
-All issues have been migrated from the old `## Dependencies` format to the 3-stakeholder format. The migration script is at `scripts/migrate-issues.sh` and is idempotent (skips already-migrated issues). The old `deps-*` labels have been deleted from the repo.
 
 ## Branding
 

@@ -425,28 +425,50 @@ export async function addItemToProject(projectId, contentId, pat) {
   `, { projectId, contentId }, pat);
 }
 
+// Module-level cache: URL → fetched ref. Shared across every fetchRef caller
+// (pipeline prefetch + detail expand) so each URL hits the network once per session.
+const _refCache = new Map();
+const _refInflight = new Map();
+
+export function clearRefCache() { _refCache.clear(); _refInflight.clear(); }
+
 /**
  * Fetch a GitHub URL — issue, PR, or non-GitHub URL — and return its type + state.
  * Non-GitHub URLs are treated as live docs (state: 'merged').
  */
 export async function fetchRef(url, pat = '') {
-  const prM   = url.match(/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/);
-  const issueM = url.match(/github\.com\/([\w.-]+)\/([\w.-]+)\/issues\/(\d+)/);
-  if (!prM && !issueM) return { type: 'url', state: 'merged', title: null, html_url: url };
+  if (_refCache.has(url))    return _refCache.get(url);
+  if (_refInflight.has(url)) return _refInflight.get(url);
 
-  try {
-    if (prM) {
-      const [, owner, repo, number] = prM;
-      const pr = await restRequest(`/repos/${owner}/${repo}/pulls/${number}`, {}, pat);
-      const state = pr.merged_at ? 'merged' : pr.state;
-      return { type: 'pr', state, title: pr.title, html_url: pr.html_url };
-    }
-    const [, owner, repo, number] = issueM;
-    const issue = await restRequest(`/repos/${owner}/${repo}/issues/${number}`, {}, pat);
-    return { type: 'issue', state: issue.state, title: issue.title, html_url: issue.html_url };
-  } catch (err) {
-    return { type: prM ? 'pr' : 'issue', state: 'error', title: null, html_url: url, error: err.message };
+  const prM    = url.match(/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/);
+  const issueM = url.match(/github\.com\/([\w.-]+)\/([\w.-]+)\/issues\/(\d+)/);
+  if (!prM && !issueM) {
+    const result = { type: 'url', state: 'merged', title: null, html_url: url };
+    _refCache.set(url, result);
+    return result;
   }
+
+  const promise = (async () => {
+    try {
+      if (prM) {
+        const [, owner, repo, number] = prM;
+        const pr = await restRequest(`/repos/${owner}/${repo}/pulls/${number}`, {}, pat);
+        const state = pr.merged_at ? 'merged' : pr.state;
+        return { type: 'pr', state, title: pr.title, html_url: pr.html_url };
+      }
+      const [, owner, repo, number] = issueM;
+      const issue = await restRequest(`/repos/${owner}/${repo}/issues/${number}`, {}, pat);
+      return { type: 'issue', state: issue.state, title: issue.title, html_url: issue.html_url };
+    } catch (err) {
+      return { type: prM ? 'pr' : 'issue', state: 'error', title: null, html_url: url, error: err.message };
+    }
+  })();
+
+  _refInflight.set(url, promise);
+  const result = await promise;
+  _refCache.set(url, result);
+  _refInflight.delete(url);
+  return result;
 }
 
 /**
@@ -463,56 +485,6 @@ export async function fetchRefsBatch(urls, pat = '') {
     }
   }
   return results;
-}
-
-// Cache: tracking issue URL → { url, state } | null
-const _closingPrCache = new Map();
-
-/**
- * Look up the PR that closes a logos-co/logos-docs tracking issue.
- * Uses GitHub's GraphQL `closedByPullRequestsReferences` connection.
- * Returns the preferred candidate ({ url, state: 'open'|'merged'|'closed' }) or null.
- * Selection: open > merged > closed-unmerged.
- *
- * @param {string} trackingUrl - logos-co/logos-docs issue URL
- * @param {string} [pat]
- * @returns {Promise<{ url: string, state: 'open'|'merged'|'closed' }|null>}
- */
-export async function fetchClosingPR(trackingUrl, pat = '') {
-  if (!trackingUrl) return null;
-  const m = trackingUrl.match(/^https?:\/\/github\.com\/logos-co\/logos-docs\/issues\/(\d+)$/);
-  if (!m) return null;
-  if (_closingPrCache.has(trackingUrl)) return _closingPrCache.get(trackingUrl);
-
-  const number = parseInt(m[1], 10);
-  try {
-    const data = await graphql(`
-      query($owner:String!, $repo:String!, $number:Int!) {
-        repository(owner:$owner, name:$repo) {
-          issue(number:$number) {
-            closedByPullRequestsReferences(first: 5, includeClosedPrs: true) {
-              nodes { url, state, isDraft, merged }
-            }
-          }
-        }
-      }
-    `, { owner: 'logos-co', repo: 'logos-docs', number }, pat);
-
-    const nodes = data?.repository?.issue?.closedByPullRequestsReferences?.nodes || [];
-    if (nodes.length === 0) {
-      _closingPrCache.set(trackingUrl, null);
-      return null;
-    }
-    // GraphQL `state` is 'OPEN' | 'CLOSED' | 'MERGED'. Prefer open > merged > closed-unmerged.
-    const score = n => n.state === 'OPEN' ? 0 : n.merged ? 1 : 2;
-    const best = [...nodes].sort((a, b) => score(a) - score(b))[0];
-    const state = best.state === 'OPEN' ? 'open' : best.merged ? 'merged' : 'closed';
-    const result = { url: best.url, state };
-    _closingPrCache.set(trackingUrl, result);
-    return result;
-  } catch {
-    return null;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -541,56 +513,196 @@ async function _fetchParentPage(parentPath, pat) {
 }
 
 /**
+ * Decompose a roadmap.logos.co milestone URL into the parent-page path and
+ * the slug used inside that page's checkbox list. Pure; no I/O.
+ *
+ * @param {string} url
+ * @returns {{parentPath: string, slug: string}|null}
+ */
+export function milestoneUrlToPaths(url) {
+  if (!url || !url.startsWith('https://roadmap.logos.co/')) return null;
+  const path = url.replace('https://roadmap.logos.co/', '').replace(/\/$/, '');
+  const parts = path.split('/');
+  if (parts.length < 2) return null; // need at least `<area>/<slug>`
+  const slug = parts.pop();
+  const parentDir = parts.join('/');
+  return { parentPath: `content/${parentDir}/index.md`, slug };
+}
+
+/**
+ * Given a roadmap parent page's raw markdown and a milestone slug, return the
+ * parsed completion status. Pure; no I/O.
+ *
+ * The parent page contains checkbox lines like:
+ *   - [x] [Title](./blockchain_cryptarchia.md)
+ *   - [ ] [Other title](./another_slug.md)
+ *
+ * @param {string} parentContent
+ * @param {string} slug
+ * @returns {{title: string, done: boolean}|null}
+ */
+export function parseMilestoneProgress(parentContent, slug) {
+  if (!parentContent || !slug) return null;
+  const escapedSlug = slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`^\\s*- \\[(x| )\\]\\s*\\[([^\\]]+)\\]\\(\\./${escapedSlug}\\.md\\)`, 'm');
+  const m = parentContent.match(re);
+  if (!m) return null;
+  return { title: m[2].trim(), done: m[1] === 'x' };
+}
+
+/**
  * Fetch milestone completion status from the parent roadmap page.
- * The parent page (e.g. content/blockchain/roadmap/index.md) contains checkbox
- * lines like `- [x] [Title](./blockchain_cryptarchia.md)`.
+ * See `parseMilestoneProgress` for the parsing logic (pure, separately tested).
  *
  * @param {string} url - e.g. https://roadmap.logos.co/blockchain/roadmap/blockchain_cryptarchia
  * @param {string} [pat]
  * @returns {Promise<{title: string, done: boolean}|null>}
  */
 export async function fetchMilestoneProgress(url, pat = '') {
-  if (!url || !url.startsWith('https://roadmap.logos.co/')) return null;
   if (_milestoneProgressCache.has(url)) return _milestoneProgressCache.get(url);
 
-  const path = url.replace('https://roadmap.logos.co/', '').replace(/\/$/, '');
-  // path = "blockchain/roadmap/blockchain_cryptarchia"
-  const parts = path.split('/');
-  const slug = parts.pop();               // "blockchain_cryptarchia"
-  const parentDir = parts.join('/');       // "blockchain/roadmap"
-  const parentPath = `content/${parentDir}/index.md`;
-
-  const content = await _fetchParentPage(parentPath, pat);
-  if (!content) {
+  const paths = milestoneUrlToPaths(url);
+  if (!paths) {
     _milestoneProgressCache.set(url, null);
     return null;
   }
 
-  // Match checkbox line linking to this milestone: - [x] [Title](./slug.md)
-  const re = new RegExp(`^\\s*- \\[(x| )\\]\\s*\\[([^\\]]+)\\]\\(\\./${slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.md\\)`, 'm');
-  const m = content.match(re);
-  if (!m) {
-    _milestoneProgressCache.set(url, null);
-    return null;
-  }
-
-  const result = { title: m[2].trim(), done: m[1] === 'x' };
+  const content = await _fetchParentPage(paths.parentPath, pat);
+  const result = content ? parseMilestoneProgress(content, paths.slug) : null;
   _milestoneProgressCache.set(url, result);
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Lifecycle label sync (status:* + blocked-by:*)
+// ---------------------------------------------------------------------------
+
+import { STATUS_LABEL_NAMES, LIFECYCLE_BLOCKED_BY } from './markdown.js';
+
+// Repo-level color map for lifecycle labels. Used by ensureLifecycleLabels.
+const STATUS_LABEL_COLORS = {
+  'status:confirm-roadmap':       'E46962',
+  'status:confirm-date':           'FA7B17',
+  'status:rnd-in-progress':        'FA7B17',
+  'status:rnd-overdue':            'E46962',
+  'status:waiting-for-doc-packet': '34BEFC',
+  'status:doc-packet-delivered':   '6AAE7B',
+  'status:doc-ready-for-review':   'FA7B17',
+  'status:doc-merged':             '6AAE7B',
+  'status:completed':              '4E635E',
+};
+const BLOCKED_BY_LABEL_COLORS = {
+  'blocked-by:rnd':                '3B7CB8',
+  'blocked-by:docs':               '6AAE7B',
+  'blocked-by:red-team':           'E46962',
+};
+function lifecycleLabelColor(name) {
+  if (STATUS_LABEL_COLORS[name]) return STATUS_LABEL_COLORS[name];
+  if (BLOCKED_BY_LABEL_COLORS[name]) return BLOCKED_BY_LABEL_COLORS[name];
+  if (name.startsWith('blocked-by:rnd-')) return '3B7CB8';
+  return '808C78';
+}
+
+// Module-scoped guard so we only hit the create endpoint once per repo per session.
+const _ensuredRepos = new Set();
+
 /**
- * Sync action:* labels on an issue to match the desired set.
- * Returns { added, removed } arrays.
+ * Create every lifecycle label in the repo (idempotent; 422 on existing is fine).
+ * Safe to call before every sync — de-duped per-session.
  */
-export async function syncActionLabels(owner, repo, issueNum, currentLabels, desiredActionLabels, pat) {
-  const ACTION_SET = ['action:rnd', 'action:docs', 'action:red-team'];
-  const currentAction = currentLabels.filter(l => ACTION_SET.includes(l));
-  const toAdd    = desiredActionLabels.filter(l => !currentAction.includes(l));
-  const toRemove = currentAction.filter(l => !desiredActionLabels.includes(l));
+export async function ensureLifecycleLabels(owner, repo, pat) {
+  const key = `${owner}/${repo}`;
+  if (_ensuredRepos.has(key)) return;
+  _ensuredRepos.add(key);
+  const names = [...STATUS_LABEL_NAMES, ...LIFECYCLE_BLOCKED_BY];
+  await Promise.all(names.map(name =>
+    createLabel(owner, repo, name, lifecycleLabelColor(name), pat).catch(() => { /* best effort */ })
+  ));
+}
+
+/**
+ * Pure decision function: given an issue's current labels + desired lifecycle
+ * labels, return the set of changes to apply. No I/O.
+ *
+ * Handles three concerns in one pass:
+ *   1. Status labels  — exactly one `status:*` label should be present (desiredStatus).
+ *   2. Blocked-by     — exactly the `desiredBlockedBy` set of lifecycle labels.
+ *                        Non-lifecycle `blocked-by:*` labels (e.g. external blockers
+ *                        like `blocked-by:legal`) are preserved untouched.
+ *   3. Legacy migration
+ *      - `action:*`       → removed
+ *      - `blocked:<team>` → renamed to `blocked-by:<team>` (add new + remove old)
+ *
+ * @param {string[]} currentLabels
+ * @param {string}   desiredStatus      e.g. 'status:rnd-in-progress'
+ * @param {string[]} desiredBlockedBy   e.g. ['blocked-by:rnd-zones']
+ * @returns {{toAdd: string[], toRemove: string[]}} de-duped
+ */
+export function planLabelChanges(currentLabels, desiredStatus, desiredBlockedBy) {
+  const current = new Set(currentLabels);
+  const desiredSet = new Set([desiredStatus, ...desiredBlockedBy]);
+  const toAdd = [];
+  const toRemove = [];
+
+  // 1. Status labels: remove any status:* that isn't desired.
+  for (const l of currentLabels) {
+    if (l.startsWith('status:') && l !== desiredStatus) toRemove.push(l);
+  }
+  if (!current.has(desiredStatus)) toAdd.push(desiredStatus);
+
+  // 2. Lifecycle blocked-by:* — remove any that aren't desired; add missing desired.
+  for (const l of currentLabels) {
+    if (LIFECYCLE_BLOCKED_BY.includes(l) && !desiredSet.has(l)) toRemove.push(l);
+  }
+  for (const l of desiredBlockedBy) {
+    if (!current.has(l)) toAdd.push(l);
+  }
+
+  // 3a. Legacy `action:*` — always remove.
+  for (const l of currentLabels) {
+    if (l.startsWith('action:')) toRemove.push(l);
+  }
+
+  // 3b. Legacy `blocked:<x>` (no -by) — migrate to `blocked-by:<x>`.
+  for (const l of currentLabels) {
+    if (/^blocked:/i.test(l) && !/^blocked-by:/i.test(l)) {
+      const team = l.replace(/^blocked:/i, '').trim();
+      const migrated = `blocked-by:${team}`;
+      if (!current.has(migrated)) toAdd.push(migrated);
+      toRemove.push(l);
+    }
+  }
+
+  // De-dupe; never list the same label in both sets.
+  const addSet    = [...new Set(toAdd)];
+  const removeSet = [...new Set(toRemove)].filter(l => !addSet.includes(l));
+  return { toAdd: addSet, toRemove: removeSet };
+}
+
+/**
+ * Reconcile an issue's lifecycle labels against the desired set and apply the
+ * change plan via the GitHub REST API. Thin shell around planLabelChanges.
+ *
+ * @returns {Promise<{added: string[], removed: string[]}>}
+ */
+export async function syncStatusLabels(owner, repo, issueNum, currentLabels, desiredStatus, desiredBlockedBy, pat) {
+  await ensureLifecycleLabels(owner, repo, pat);
+
+  const { toAdd, toRemove } = planLabelChanges(currentLabels, desiredStatus, desiredBlockedBy);
+
+  // For each migrated `blocked-by:<team>` that the repo doesn't already know
+  // about, create the label lazily with a neutral color.
+  const migratedNames = toAdd.filter(n =>
+    n.startsWith('blocked-by:') && !LIFECYCLE_BLOCKED_BY.includes(n)
+  );
+  await Promise.all(migratedNames.map(name =>
+    createLabel(owner, repo, name, '808C78', pat).catch(() => {})
+  ));
+
   await Promise.all([
     ...(toAdd.length ? [addLabels(owner, repo, issueNum, toAdd, pat)] : []),
-    ...toRemove.map(l => removeLabel(owner, repo, issueNum, l, pat)),
+    ...toRemove.map(l => removeLabel(owner, repo, issueNum, l, pat).catch(() => {})),
   ]);
+
   return { added: toAdd, removed: toRemove };
 }

@@ -3,21 +3,21 @@
  */
 
 import {
-  extractBlockedTeam, extractDocumentation,
+  extractBlockingTeam, extractDocumentation,
   extractRnD, extractDocPacket, extractRedTeam,
-  computeRnDState, computeDocsState, computeRedTeamState, computeActionLabels,
+  computeStatus, computeDesiredLabels, LIFECYCLE_BLOCKED_BY, RND_TEAMS,
   newIssueBody, renderMarkdown,
 } from './markdown.js';
 import { toggleDetail, expandAll, collapseAll, getOpenCount } from './detail.js';
 import { hasWritePAT, getReadPAT, getWritePAT, getConfig } from './config.js';
 import { teamColor, statusBadge, showToast } from './app.js';
-import { fetchRefsBatch, createIssue, addItemToProject, createLabel, fetchMilestoneProgress } from './api.js';
+import { fetchRefsBatch, createIssue, addItemToProject, fetchMilestoneProgress, ensureLifecycleLabels } from './api.js';
 
 // Active filters — persist until project reload
 let activeTeamFilter  = null; // null | team slug | 'unassigned'
-let activeStateFilter = null; // null | 'action:rnd' | 'action:docs' | 'action:red-team' | 'mismatch'
+let activeStateFilter = null; // null | 'blocked-by:<...>' | 'mismatch'
 
-// Global mismatch registry: itemId → { item, actualLabels, expectedActions }
+// Global mismatch registry: itemId → { item, actualLabels, desiredStatus, desiredBlockedBy }
 const _mismatchedItems = new Map();
 
 export function getMismatchCount() { return _mismatchedItems.size; }
@@ -80,8 +80,8 @@ export function renderPipeline(container, items, projectTitle, projectId) {
         <div>Journey</div>
         <div>Journey<br>Type</div>
         <div>Target<br>Release</div>
-        <div>Progress</div>
-        <div>Action<br>Needed From</div>
+        <div>Status</div>
+        <div>Blocked<br>By</div>
         <div></div>
       </div>
     </div>`;
@@ -183,7 +183,7 @@ export function renderPipeline(container, items, projectTitle, projectId) {
   }
   if (activeStateFilter) {
     const btn = document.querySelector(`.filter-action-pill[data-action="${CSS.escape(activeStateFilter)}"]`);
-    if (btn) pillActivate(btn, ACTION_PILL_COLORS[activeStateFilter] || '#808C78');
+    if (btn) pillActivate(btn, actionPillColor(activeStateFilter));
   }
   if (activeTeamFilter || activeStateFilter) applyFilter(allItems);
   attachNewJourneyHandler(projectId);
@@ -202,22 +202,37 @@ For Logos R&D Leads.
 1. Go to https://journeys.logos.co or run locally with \`npx serve .\`.
 2. Follow instructions to enter GitHub PAT Token.
 3. **Filter by team**: Click on your team in the "Team:" line.
-4. **Filter by action needed**: use the filter bar at the top to show only journeys where your team has an open action: \`action:rnd\`.
-5. **Expand a journey**: click any row to open the detail panel. It shows the full workflow state for R&D, Doc Packet, Documentation, and Red Team.
+4. **Filter by who's blocking**: use the "Blocked by" filter bar at the top to show only journeys where your team is blocking progress (e.g. \`blocked-by:rnd-zones\`).
+5. **Expand a journey**: click any row to open the detail panel. It shows the R&D fields, Doc Packet link, Documentation tracking + PR, and Red Team tracking.
 6. **Enable editing**: click the **Edit** button in the header. Once active, the button shows **Editing** in coral.
-7. **Fill in missing information**: with editing enabled, each workflow section shows an input field. Paste the relevant URL or value and press Enter (or click ✓) to save directly to the GitHub issue.
+7. **Fill in missing information**: with editing enabled, each section shows an input field. Paste the relevant URL or value and press Enter (or click ✓) to save directly to the GitHub issue.
+8. **Sync labels**: if the ⚠ Fix Labels button appears, click it to reconcile the \`status:*\` / \`blocked-by:*\` labels with the issue body.
 
 > **Settings** (gear icon): change the owner, project number, or token at any time.
 
-### Missing Information for R&D Logos Lead
+### Lifecycle phases and next steps
 
-As a first step, Logos R&D Leads need to:
+Each journey has exactly one \`status:*\` label plus one or more \`blocked-by:*\` labels, auto-managed from the issue body. The "Next step" column tells the blocking team what to do:
+
+| Status                           | Next step (who does it)                                                                                                | Blocked by              |
+|----------------------------------|------------------------------------------------------------------------------------------------------------------------|-------------------------|
+| \`status:confirm-roadmap\`        | **R&D lead**: set \`- team:\` and a \`- milestone:\` URL in the body                                                    | \`blocked-by:rnd[-<team>]\` |
+| \`status:confirm-date\`           | **R&D lead**: add \`- date:\` (DDMmmYY)                                                                                 | \`blocked-by:rnd-<team>\`   |
+| \`status:rnd-in-progress\`        | **R&D**: deliver the roadmap milestones (auto-advances when all are ticked in [roadmap.logos.co](https://roadmap.logos.co)) | \`blocked-by:rnd-<team>\`   |
+| \`status:rnd-overdue\`            | **R&D**: deliver the milestones — date passed, update the date or close them                                           | \`blocked-by:rnd-<team>\`   |
+| \`status:waiting-for-doc-packet\` | **R&D**: file a doc packet issue from the [template](https://github.com/logos-co/logos-docs/issues/new?template=doc-packet.yml), paste URL into \`## Doc Packet - link:\` | \`blocked-by:rnd-<team>\` |
+| \`status:doc-packet-delivered\`   | **Docs**: open a tracking issue (\`## Documentation - tracking:\`), write the doc, and once the PR is ready for review paste its URL into \`## Documentation - pr:\` | \`blocked-by:docs\`         |
+| \`status:doc-ready-for-review\`   | **R&D and Red Team**: review the doc PR. **Docs**: merge the PR once both have approved                                | \`blocked-by:red-team\` + \`blocked-by:rnd-<team>\` |
+| \`status:doc-merged\`             | **Red Team**: finish dogfooding, close \`## Red Team - tracking:\` when done                                            | \`blocked-by:red-team\`     |
+| \`status:completed\`              | Nothing — journey is done                                                                                              | —                       |
+
+### As a first step, Logos R&D Leads should:
 
 1. Verify their journeys are correct, with the right target release.
-2. Ensure there are no missing journeys. Click "+ New Journey" to add a journey in **Editing** mode.
+2. Ensure there are no missing journeys. Click "+ New Journey" to add one in **Editing** mode.
 3. Expand a journey (start from the top).
-   1. If the software is already delivered, jump to "doc packet" and fill in the GitHub issue template.
-   2. For software yet to be done, start with the "R&D" section, and enter a link to the milestone. Once known, enter the date.`;
+   1. If the software is already delivered, jump to "Doc Packet" and fill in the GitHub issue template.
+   2. For software yet to be done, start with the "R&D" section: enter a milestone URL, then the estimated date.`;
 
   content.innerHTML = renderMarkdown(usageText) +
     `<p class="mt-4 text-xs" style="font-family:Arial,Helvetica,sans-serif;color:#808C78;">
@@ -239,7 +254,7 @@ window._toggleInstructions = () => {
 // ---------------------------------------------------------------------------
 
 function renderFilterBar(openItems = []) {
-  // Collect distinct R&D team slugs from open items
+  // Collect distinct R&D team slugs from open items (for the team-ownership row).
   const teamSet = new Set();
   let hasUnassigned = false;
   for (const item of openItems) {
@@ -271,16 +286,20 @@ function renderFilterBar(openItems = []) {
       ${hasUnassigned ? pill('filter-team-pill', 'data-team="unassigned"', 'unassigned') : ''}
     </div>` : '';
 
-  const actionFilters = [
-    { key: 'action:rnd',      label: 'needs R&D'      },
-    { key: 'action:docs',     label: 'needs docs'     },
-    { key: 'action:red-team', label: 'needs red team' },
-    { key: 'mismatch',        label: '⚠ out of sync'  },
+  // "Blocked by" filter pills — order: R&D (all) → docs → red team → per-team → unassigned → mismatch.
+  const rndTeamsPresent = [...teamSet].sort();
+  const blockedByFilters = [
+    { key: 'blocked-by:rnd-*',    label: 'R&D'      },
+    { key: 'blocked-by:docs',     label: 'docs'     },
+    { key: 'blocked-by:red-team', label: 'red team' },
+    ...rndTeamsPresent.map(t => ({ key: `blocked-by:rnd-${t}`, label: t })),
+    ...(hasUnassigned ? [{ key: 'blocked-by:rnd', label: 'unassigned' }] : []),
+    { key: 'mismatch',            label: '⚠ out of sync' },
   ];
   const actionRow = `
     <div id="action-filter-bar" class="flex items-center gap-2 flex-wrap">
-      <span class="text-xs flex-none" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Action:</span>
-      ${actionFilters.map(f => pill('filter-action-pill', `data-action="${escapeHtml(f.key)}"`, f.label)).join('')}
+      <span class="text-xs flex-none" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Blocked by:</span>
+      ${blockedByFilters.map(f => pill('filter-action-pill', `data-action="${escapeHtml(f.key)}"`, f.label)).join('')}
     </div>`;
 
   return `<div id="filter-bar" class="space-y-1.5">${teamRow}${actionRow}</div>`;
@@ -338,6 +357,9 @@ function applyFilter(allItems) {
     if (activeStateFilter) {
       if (activeStateFilter === 'mismatch') {
         matchesAction = wrapper.dataset.mismatch === 'true';
+      } else if (activeStateFilter === 'blocked-by:rnd-*') {
+        const labels = JSON.parse(wrapper.dataset.actionLabels || '[]');
+        matchesAction = labels.some(l => l === 'blocked-by:rnd' || l.startsWith('blocked-by:rnd-'));
       } else {
         const labels = JSON.parse(wrapper.dataset.actionLabels || '[]');
         matchesAction = labels.includes(activeStateFilter);
@@ -359,9 +381,18 @@ function syncFiltersToUrl() {
   history.replaceState(null, '', qs ? '?' + qs : window.location.pathname);
 }
 
-const ACTION_PILL_COLORS = {
-  'action:rnd': '#3B7CB8', 'action:docs': '#6AAE7B', 'action:red-team': '#E46962', 'mismatch': '#FA7B17',
-};
+function actionPillColor(key) {
+  if (key === 'mismatch')               return '#FA7B17';
+  if (key === 'blocked-by:docs')        return '#6AAE7B';
+  if (key === 'blocked-by:red-team')    return '#E46962';
+  if (key === 'blocked-by:rnd-*')       return '#3B7CB8';
+  if (key === 'blocked-by:rnd')         return '#3B7CB8';
+  if (key && key.startsWith('blocked-by:rnd-')) {
+    const team = key.slice('blocked-by:rnd-'.length);
+    return teamColor(team, 0.85);
+  }
+  return '#808C78';
+}
 
 function pillReset(btn) {
   btn.style.background   = 'transparent';
@@ -402,7 +433,7 @@ function attachFilterHandlers(allItems) {
       } else {
         document.querySelectorAll('.filter-action-pill').forEach(pillReset);
         activeStateFilter = key;
-        pillActivate(btn, ACTION_PILL_COLORS[key] || '#808C78');
+        pillActivate(btn, actionPillColor(key));
       }
       applyFilter(allItems);
       syncFiltersToUrl();
@@ -436,11 +467,14 @@ function renderPipelineRow(item, index, canDrag, canWrite = false) {
   if (!issue) return '';
 
   const labels      = issue.labels?.nodes || [];
-  const blockedTeam = extractBlockedTeam(labels);
+  const blockedTeam = extractBlockingTeam(labels);
   const repo        = issue.repository?.nameWithOwner || '';
   const rankLabel   = String(index + 1).padStart(2, '0');
 
-  const actionLabels = labels.filter(l => l.name.startsWith('action:')).map(l => l.name);
+  // Lifecycle blocked-by:* labels actually present on the issue (filters + mismatch use these).
+  const blockedByLabels = labels
+    .filter(l => LIFECYCLE_BLOCKED_BY.includes(l.name))
+    .map(l => l.name);
   const { rnd, docs: parsedDocs } = getParsedSections(item);
   const rndTeamSlug  = rnd.team || '';
 
@@ -465,11 +499,11 @@ function renderPipelineRow(item, index, canDrag, canWrite = false) {
     ? releaseLabels.map(labelPill).join(' ')
     : `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">—</span>`;
 
-  const docUrl = parsedDocs.link;
+  const docUrl = parsedDocs.pr;
 
   return `
     <div id="filter-item-${item.id}"
-         data-action-labels="${escapeHtml(JSON.stringify(actionLabels))}"
+         data-action-labels="${escapeHtml(JSON.stringify(blockedByLabels))}"
          data-rnd-team="${escapeHtml(rndTeamSlug)}">
       <div
         id="row-${item.id}"
@@ -542,83 +576,77 @@ function renderPipelineRow(item, index, canDrag, canWrite = false) {
 // Stakeholder badges (async — loads after render)
 // ---------------------------------------------------------------------------
 
-const RND_COLORS = {
-  'to-be-confirmed':      '#E46962',
-  'confirmed':            '#FA7B17',
-  'in-progress':          '#FA7B17',
-  'pending-doc-packet':   '#34befc',
-  'doc-packet-delivered': '#6AAE7B',
+export const STATUS_COLORS = {
+  'confirm-roadmap':        '#E46962',
+  'confirm-date':           '#FA7B17',
+  'rnd-in-progress':        '#FA7B17',
+  'rnd-overdue':            '#E46962',
+  'waiting-for-doc-packet': '#34BEFC',
+  'doc-packet-delivered':   '#6AAE7B',
+  'doc-ready-for-review':   '#FA7B17',
+  'doc-merged':             '#6AAE7B',
+  'completed':              '#4E635E',
 };
-const DOCS_COLORS = {
-  'waiting':          '#808C78',
-  'in-progress':      '#FA7B17',
-  'merged':           '#6AAE7B',
-};
-const REDTEAM_COLORS = {
-  'waiting':     '#808C78',
-  'in-progress': '#FA7B17',
-  'done':        '#6AAE7B',
-};
-const ACTION_LABEL_COLORS = {
-  'action:rnd':      '#3B7CB8',
-  'action:docs':     '#6AAE7B',
-  'action:red-team': '#E46962',
+export const STATUS_LABELS = {
+  'confirm-roadmap':        'Confirm roadmap',
+  'confirm-date':           'Confirm date',
+  'rnd-in-progress':        'R&D in progress',
+  'rnd-overdue':            'R&D overdue',
+  'waiting-for-doc-packet': 'Waiting for doc packet',
+  'doc-packet-delivered':   'Doc packet delivered',
+  'doc-ready-for-review':   'Doc ready for review',
+  'doc-merged':             'Doc merged',
+  'completed':              'Completed',
 };
 
 function dot(color) {
   return `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;margin-top:1px;"></span>`;
 }
 
-function stakeholderBadge(label, color, url, tooltip) {
-  const tag   = url ? 'a' : 'span';
-  const attrs = url ? `href="${escapeHtml(url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"` : '';
-  return `<${tag} ${attrs}
-    class="inline-flex items-center gap-1 px-1.5 py-px rounded text-xs transition-colors"
-    style="background:rgba(255,255,255,0.7);border:1px solid rgba(78,99,94,0.25);font-family:Arial,Helvetica,sans-serif;color:#4E635E;white-space:nowrap;${url ? 'text-decoration:none;cursor:pointer;' : ''}"
-    title="${escapeHtml(tooltip)}"
-    ${url ? `onmouseover="this.style.background='rgba(78,99,94,0.1)'" onmouseout="this.style.background='rgba(255,255,255,0.7)'"` : ''}>
+/** Single-pill status badge for the pipeline row. */
+export function renderStatusBadge(status) {
+  const color = STATUS_COLORS[status] || '#808C78';
+  const label = STATUS_LABELS[status] || status;
+  return `<span class="inline-flex items-center gap-1 px-1.5 py-px rounded text-xs"
+    style="background:${color}1A;color:${color};border:1px solid ${color}55;font-family:Arial,Helvetica,sans-serif;white-space:nowrap;"
+    title="${escapeHtml(label)}">
     ${dot(color)} ${escapeHtml(label)}
-  </${tag}>`;
+  </span>`;
 }
 
-export function renderStakeholderBadges(rndTeam, rndState, docsPr, docsState, redTeamLink, redTeamState) {
-  const rndColor = RND_COLORS[rndState] || '#808C78';
-  const rndBadge = stakeholderBadge('r&d', rndColor, null, `R&D: ${rndTeam || 'unassigned'} — ${rndState}`);
-  const docsBadge   = stakeholderBadge('docs',     DOCS_COLORS[docsState]            || '#808C78', docsPr,       `docs: ${docsState}`);
-  const rtBadge     = stakeholderBadge('red team', REDTEAM_COLORS[redTeamState]       || '#808C78', redTeamLink,  `red team: ${redTeamState}`);
-
-  return rndBadge + docsBadge + rtBadge;
-}
-
-export function renderActionColumn(rndTeam, actionLabels, mismatch) {
-  const ACTION_TEAM_MAP = {
-    'action:rnd':      rndTeam || 'r&d',
-    'action:docs':     'docs',
-    'action:red-team': 'red team',
-  };
-
-  const teams = actionLabels.map(l => {
-    const name = ACTION_TEAM_MAP[l] || l.replace('action:', '');
-    const bg    = teamColor(name, 0.12);
-    const text  = teamColor(name, 0.85);
-    const border = teamColor(name, 0.35);
+/**
+ * Render one pill per blocked-by:* label. R&D pills show the team name only (e.g. "zones").
+ */
+export function renderBlockedByColumn(blockedByLabels, mismatch) {
+  const pillFor = (labelName) => {
+    let team;
+    if (labelName === 'blocked-by:rnd')              team = 'r&d';
+    else if (labelName === 'blocked-by:docs')        team = 'docs';
+    else if (labelName === 'blocked-by:red-team')    team = 'red team';
+    else if (labelName.startsWith('blocked-by:rnd-'))team = labelName.slice('blocked-by:rnd-'.length);
+    else                                             team = labelName.replace(/^blocked-by:/, '');
+    const bg    = teamColor(team, 0.12);
+    const text  = teamColor(team, 0.85);
+    const border = teamColor(team, 0.35);
     return `<span class="inline-flex items-center px-1.5 py-px rounded text-xs font-medium"
-      style="background:${bg};color:${text};border:1px solid ${border};font-family:Arial,Helvetica,sans-serif;white-space:nowrap;">
-      ${escapeHtml(name)}
+      style="background:${bg};color:${text};border:1px solid ${border};font-family:Arial,Helvetica,sans-serif;white-space:nowrap;"
+      title="${escapeHtml(labelName)}">
+      ${escapeHtml(team)}
     </span>`;
-  }).join('');
-
+  };
+  const pills = blockedByLabels.map(pillFor).join('');
   const warnHtml = mismatch
-    ? `<span title="Action labels out of sync with issue state" style="color:#FA7B17;font-size:12px;cursor:help;">⚠</span>`
+    ? `<span title="Status labels out of sync with issue state" style="color:#FA7B17;font-size:12px;cursor:help;">⚠</span>`
     : '';
-
-  return teams + warnHtml;
+  return pills + warnHtml;
 }
 
 async function loadAllStakeholderBadges(items) {
   const pat = getReadPAT();
 
   // Single pass: collect links to fetch and cache parsed sections per item.
+  // docsTracking is NOT prefetched (only used in the detail panel); the module-level
+  // fetchRef cache in api.js makes its lazy fetch fast on repeat opens.
   const linksToFetch = [];
   const itemData     = new Map(); // itemId → { parsed, rtIdx, docsPrIdx }
 
@@ -643,37 +671,40 @@ async function loadAllStakeholderBadges(items) {
   for (const item of items) {
     const { parsed, rtIdx, docsPrIdx } = itemData.get(item.id);
     const { rnd, docPacket: docPacketLink, docs: { pr: docsPr }, redTeam: { tracking: redTeamLink } } = parsed;
-    const labels       = item.content?.labels?.nodes || [];
-    const actionLabels = labels.filter(l => l.name.startsWith('action:')).map(l => l.name);
-
-    const rndState     = computeRnDState(rnd, docPacketLink);
-    const rtRef      = rtIdx     >= 0 ? refResults[rtIdx]     : null;
-    const docsPrRef  = docsPrIdx >= 0 ? refResults[docsPrIdx] : null;
-    item._refCache   = { redTeamLink, rtRef, docsPr, docsPrRef };
-    const docsState  = computeDocsState(docsPr, docsPrRef);
-    const redTeamState = computeRedTeamState(redTeamLink, rtRef);
-
-    // Corruption detection: compare actual action labels vs expected
-    const expectedActions = computeActionLabels(rndState, docsState, redTeamState);
+    const labels    = item.content?.labels?.nodes || [];
     const allLabels = labels.map(l => l.name);
-    const mismatch = JSON.stringify([...actionLabels].sort()) !== JSON.stringify([...expectedActions].sort());
 
+    const rtRef     = rtIdx     >= 0 ? refResults[rtIdx]     : null;
+    const docsPrRef = docsPrIdx >= 0 ? refResults[docsPrIdx] : null;
+    item._refCache  = { redTeamLink, rtRef, docsPr, docsPrRef };
+
+    const status = computeStatus({
+      rnd, docPacketLink, docsPr, docsPrRef, redTeamLink, redTeamRef: rtRef,
+      allMilestonesDone: false,
+    });
+    const desired = computeDesiredLabels(status, rnd.team);
+
+    const mismatch = computeLifecycleMismatch(allLabels, desired);
     if (mismatch) {
-      _mismatchedItems.set(item.id, { item, actualLabels: allLabels, expectedActions });
+      _mismatchedItems.set(item.id, {
+        item,
+        actualLabels: allLabels,
+        desiredStatus: desired.status,
+        desiredBlockedBy: desired.blockedBy,
+      });
     }
 
-    const el = document.getElementById(`pending-${item.id}`);
-    if (el) el.innerHTML = renderStakeholderBadges(
-      rnd.team, rndState, docsPr, docsState, redTeamLink, redTeamState
-    );
+    const badgeEl = document.getElementById(`pending-${item.id}`);
+    if (badgeEl) badgeEl.innerHTML = renderStatusBadge(status);
 
     const actionEl = document.getElementById(`action-${item.id}`);
-    if (actionEl) actionEl.innerHTML = renderActionColumn(rnd.team, actionLabels, mismatch);
+    if (actionEl) actionEl.innerHTML = renderBlockedByColumn(desired.blockedBy, mismatch);
 
-    // Update filter wrapper with current action labels and mismatch flag
+    // Store DESIRED lifecycle blocked-by:* labels so filters match what's rendered,
+    // independent of whether the GitHub labels have been synced yet.
     const wrapper = document.getElementById(`filter-item-${item.id}`);
     if (wrapper) {
-      wrapper.dataset.actionLabels = JSON.stringify(actionLabels);
+      wrapper.dataset.actionLabels = JSON.stringify(desired.blockedBy);
       wrapper.dataset.mismatch = mismatch ? 'true' : 'false';
     }
   }
@@ -681,8 +712,32 @@ async function loadAllStakeholderBadges(items) {
   // Notify header to update fix-labels button state
   document.dispatchEvent(new CustomEvent('mismatch-count-changed'));
 
-  // Async second pass: fetch milestone progress and upgrade in-progress → pending-doc-packet
+  // Async second pass: fetch milestone progress and upgrade rnd-in-progress → waiting-for-doc-packet
   loadMilestoneProgressForPipeline(items, pat);
+}
+
+/**
+ * Return true if the issue's status:* / lifecycle blocked-by:* / legacy action:* / legacy blocked:*
+ * labels don't match the desired set.
+ */
+function computeLifecycleMismatch(actualLabels, desired) {
+  // Check exactly one status:* label and it matches desired.status
+  const statusLabels = actualLabels.filter(l => l.startsWith('status:'));
+  if (statusLabels.length !== 1 || statusLabels[0] !== desired.status) return true;
+
+  // Check lifecycle blocked-by:* labels match desired set exactly.
+  const actualBlocked = actualLabels.filter(l => LIFECYCLE_BLOCKED_BY.includes(l)).sort();
+  const wantBlocked = [...desired.blockedBy].sort();
+  if (actualBlocked.length !== wantBlocked.length) return true;
+  for (let i = 0; i < actualBlocked.length; i++) {
+    if (actualBlocked[i] !== wantBlocked[i]) return true;
+  }
+
+  // Any legacy labels still present?
+  if (actualLabels.some(l => l.startsWith('action:'))) return true;
+  if (actualLabels.some(l => /^blocked:/i.test(l) && !/^blocked-by:/i.test(l))) return true;
+
+  return false;
 }
 
 async function loadMilestoneProgressForPipeline(items, pat) {
@@ -700,10 +755,16 @@ async function loadMilestoneProgressForPipeline(items, pat) {
   // Now check each item
   for (const item of items) {
     const { rnd, docPacket: docPacketLink, docs, redTeam } = getParsedSections(item);
+    const docsPr = docs.pr;
+    const docsPrRef = item._refCache?.docsPrRef || null;
+    const rtRef     = item._refCache?.rtRef     || null;
 
-    // Only relevant if confirmed or in-progress (has team + milestones, no doc packet)
-    const baseState = computeRnDState(rnd, docPacketLink, false);
-    if (baseState !== 'in-progress' && baseState !== 'confirmed') continue;
+    // Only relevant pre-doc-packet (has team + milestones, no doc packet yet).
+    const baseStatus = computeStatus({
+      rnd, docPacketLink, docsPr, docsPrRef, redTeamLink: redTeam.tracking, redTeamRef: rtRef,
+      allMilestonesDone: false,
+    });
+    if (!['rnd-in-progress','rnd-overdue','confirm-date'].includes(baseStatus)) continue;
 
     const roadmapMilestones = rnd.milestones.filter(u => u.startsWith('https://roadmap.logos.co/'));
     if (roadmapMilestones.length === 0) continue;
@@ -712,16 +773,38 @@ async function loadMilestoneProgressForPipeline(items, pat) {
     const resolved = progressResults.filter(r => r !== null);
     if (resolved.length === 0 || !resolved.every(r => r.done)) continue;
 
-    // All milestones done → upgrade badge to pending-doc-packet
-    const newState = 'pending-doc-packet';
+    // All milestones done → upgrade to waiting-for-doc-packet
+    const newStatus = computeStatus({
+      rnd, docPacketLink, docsPr, docsPrRef, redTeamLink: redTeam.tracking, redTeamRef: rtRef,
+      allMilestonesDone: true,
+    });
     const el = document.getElementById(`pending-${item.id}`);
-    if (el) {
-      const rtRef = item._refCache?.rtRef || null;
-      const docsPrRef = item._refCache?.docsPrRef || null;
-      const docsState = computeDocsState(docs.pr, docsPrRef);
-      const redTeamState = computeRedTeamState(redTeam.tracking, rtRef);
-      el.innerHTML = renderStakeholderBadges(rnd.team, newState, docs.pr, docsState, redTeam.tracking, redTeamState);
+    if (el) el.innerHTML = renderStatusBadge(newStatus);
+
+    // Update blocked-by and mismatch since status changed
+    const desired = computeDesiredLabels(newStatus, rnd.team);
+    const labels = item.content?.labels?.nodes?.map(l => l.name) || [];
+    const mismatch = computeLifecycleMismatch(labels, desired);
+    if (mismatch) {
+      _mismatchedItems.set(item.id, {
+        item,
+        actualLabels: labels,
+        desiredStatus: desired.status,
+        desiredBlockedBy: desired.blockedBy,
+      });
+    } else {
+      _mismatchedItems.delete(item.id);
     }
+    const actionEl = document.getElementById(`action-${item.id}`);
+    if (actionEl) actionEl.innerHTML = renderBlockedByColumn(desired.blockedBy, mismatch);
+
+    // Keep the filter wrapper in sync with the upgraded status.
+    const wrapper = document.getElementById(`filter-item-${item.id}`);
+    if (wrapper) {
+      wrapper.dataset.actionLabels = JSON.stringify(desired.blockedBy);
+      wrapper.dataset.mismatch = mismatch ? 'true' : 'false';
+    }
+    document.dispatchEvent(new CustomEvent('mismatch-count-changed'));
   }
 }
 
@@ -729,7 +812,6 @@ async function loadMilestoneProgressForPipeline(items, pat) {
 // New Journey modal
 // ---------------------------------------------------------------------------
 
-const RND_TEAMS   = ['anon-comms', 'messaging', 'core', 'storage', 'blockchain', 'zones', 'smart-contract', 'devkit'];
 const JOURNEY_TYPES = [
   { name: 'developer',     label: 'Developer',      color: '3B7CB8' },
   { name: 'gui user',      label: 'GUI User',        color: 'D94F45' },
@@ -829,14 +911,18 @@ function attachNewJourneyHandler(projectId) {
     if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Creating…'; }
 
     try {
-      // Ensure action:rnd label exists
-      await createLabel(_projectOwner, _projectRepo, 'action:rnd', 'E46962', pat);
+      // Ensure all lifecycle labels exist in the repo (status:* + blocked-by:*).
+      await ensureLifecycleLabels(_projectOwner, _projectRepo, pat);
 
       // Build body
       let body = newIssueBody(team);
       if (milestone) body = body.replace(/- milestone:[ ]*/, `- milestone: ${milestone}`);
 
-      const labels = [type, release, 'action:rnd'];
+      // Initial status: if a milestone URL was provided we're at confirm-date,
+      // otherwise confirm-roadmap. Blocked-by is the team (or unassigned rnd).
+      const initialStatus = milestone ? 'status:confirm-date' : 'status:confirm-roadmap';
+      const initialBlockedBy = (team && RND_TEAMS.includes(team)) ? `blocked-by:rnd-${team}` : 'blocked-by:rnd';
+      const labels = [type, release, initialStatus, initialBlockedBy];
       const issue  = await createIssue(_projectOwner, _projectRepo, title, body, labels, pat);
 
       if (projectId && issue.node_id) {

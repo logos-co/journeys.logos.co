@@ -11,68 +11,54 @@ For Logos R&D Leads.
 1. Go to https://journeys.logos.co or [run locally](#run-locally).
 2. Follow instructions to enter GitHub PAT Token.
 3. **Filter by team**: Click on your team in the "Team:" line.
-4. **Filter by action needed**: use the filter bar at the top to show only journeys where your team has an open action: `action:rnd`.
-5. **Expand a journey**: click any row to open the detail panel. It shows the full workflow state for R&D, Doc Packet, Documentation, and Red Team.
+4. **Filter by who's blocking**: use the "Blocked by" filter bar at the top to show only journeys your team is currently blocking (e.g. `R&D` for all rnd teams, or a specific team like `zones`).
+5. **Expand a journey**: click any row to open the detail panel. It shows the R&D inputs, doc packet link, documentation tracking issue + PR, and red team tracking issue.
 6. **Enable editing**: click the **Edit** button in the header. Once active, the button shows **Editing** in coral.
-7. **Fill in missing information**: with editing enabled, each workflow section shows an input field. Paste the relevant URL or value and press Enter (or click ✓) to save directly to the GitHub issue.
+7. **Fill in missing information**: with editing enabled, each section shows an input field. Paste the relevant URL or value and press Enter (or click ✓) to save directly to the GitHub issue.
+8. **Sync labels**: if the ⚠ "Fix Labels" button appears, click it to reconcile the `status:*` / `blocked-by:*` labels with the issue body.
 
 > **Settings** (gear icon): change the owner, project number, or token at any time.
 
-### Missing Information for R&D Logos Lead
+### Missing information for R&D Logos Lead
 
 See [How a journey progresses](#how-a-journey-progresses) to understand the full flow.
-As a first step, Logos R&D Lead need to:
+As a first step, Logos R&D Leads need to:
 
-1. Verify their journey are correct, with the right target release
-2. Ensure there are no missing journey. Click "+ New Journey" to add a journey in **Editing** mode.
+1. Verify their journeys are correct, with the right target release.
+2. Ensure there are no missing journeys. Click "+ New Journey" to add one in **Editing** mode.
 3. Expand a journey (start from the top).
-   1. If the software is already delivered, jump to "doc packet" and fill in the GitHub issue tempalte
-   2. For software yet to be done, start with the "R&D" section, and enter a link to the milestone. Once known, enter the date.
+   1. If the software is already delivered, jump to "Doc Packet" and fill in the GitHub issue template.
+   2. For software yet to be done, start with the "R&D" section — enter a link to the milestone, then fill in the estimated date once known.
 
 ## How a journey progresses
 
-Each journey moves through three stakeholder stages. R&D and Docs run sequentially; Docs and Red Team overlap during the review phase:
+Each journey has a single `status:<phase>` label and one or more `blocked-by:<team>` labels — both auto-managed by the app based on what's in the issue body. The whole lifecycle is one linear sequence:
 
-| Stage        | States                                                                   |
-|--------------|--------------------------------------------------------------------------|
-| **R&D**      | `to-be-confirmed` → `confirmed` → `in-progress` → `doc-packet-delivered` |
-| **Docs**     | `waiting` → `in-progress` → `merged`                                     |
-| **Red Team** | `waiting` → `in-progress` → `done`                                       |
+| `status:*`                      | Next step (who does it)                                                                     | Blocked by                  |
+|---------------------------------|---------------------------------------------------------------------------------------------|-----------------------------|
+| `status:confirm-roadmap`        | **R&D lead**: set `- team:` and a `- milestone:` URL in the issue body                      | `blocked-by:rnd` (or team)  |
+| `status:confirm-date`           | **R&D lead**: add the estimated delivery `- date:` (DDMmmYY)                                | `blocked-by:rnd-<team>`     |
+| `status:rnd-in-progress`        | **R&D**: deliver the roadmap milestones (auto-advances when all are ticked in [roadmap.logos.co](https://roadmap.logos.co)) | `blocked-by:rnd-<team>`     |
+| `status:rnd-overdue`            | **R&D**: deliver the milestones — target date has passed, update the date or close them    | `blocked-by:rnd-<team>`     |
+| `status:waiting-for-doc-packet` | **R&D**: open a [doc packet issue](https://github.com/logos-co/logos-docs/issues/new?template=doc-packet.yml), fill it in, paste its URL into `## Doc Packet - link:` | `blocked-by:rnd-<team>` |
+| `status:doc-packet-delivered`   | **Docs**: open a tracking issue (paste into `## Documentation - tracking:`), write the doc, and once the doc PR is ready for review paste its URL into `## Documentation - pr:` | `blocked-by:docs`           |
+| `status:doc-ready-for-review`   | **R&D and Red Team**: review the doc PR. **Docs**: merge the PR once both have approved     | `blocked-by:red-team` + `blocked-by:rnd-<team>` |
+| `status:doc-merged`             | **Red Team**: finish dogfooding, close `## Red Team - tracking:` when done                  | `blocked-by:red-team`       |
+| `status:completed`              | Nothing — journey is done                                                                   | —                           |
 
-```mermaid
-flowchart TD
-    start[journey created] -->|"+ action:rnd"| r1
+The doc PR URL (`## Documentation - pr:`) is added **manually by the docs team** as an explicit "ready for review" signal — there is no auto-discovery.
 
-    subgraph RND[R and D]
-        r1["to-be-confirmed"] --> r2[confirmed] --> r3["in-progress"] --> r4["doc-packet-delivered"]
-    end
+R&D team granularity: `<team>` is one of `anon-comms`, `messaging`, `core`, `storage`, `blockchain`, `zones`, `smart-contract`, `devkit`.
 
-    r4 -->|"- action:rnd + action:docs"| d1
+### The hand-offs
 
-    subgraph DOCS[Docs]
-        d1[waiting] --> d2["in-progress"]
-    end
+1. **R&D** fills in their team, a roadmap milestone link, and an estimated date. When all milestones are closed (checked against the `logos-co/roadmap` repo), the phase auto-advances to `waiting-for-doc-packet`. R&D then [opens an issue using the doc packet template](https://github.com/logos-co/logos-docs/issues/new?template=doc-packet.yml), fills it in (including appointing a Subject-Matter Expert from their team), and pastes the issue URL into the `- link:` field of the `## Doc Packet` section. That flip (`status:doc-packet-delivered`) hands off to Docs.
+2. **Docs** opens a tracking issue in `logos-co/logos-docs` (pasted into `## Documentation - tracking:`) and begins writing. When the doc PR is ready for review, Docs **manually** pastes the PR URL into `## Documentation - pr:` — this is an explicit "ready for review" signal (no auto-discovery), which advances the journey to `doc-ready-for-review`. Red Team and the R&D SME review on that PR; once approved, Docs merges it → `doc-merged`.
+3. **Red Team** dogfoods the journey and reviews the doc PR simultaneously. Their tracking issue lives in `## Red Team - tracking:`. Closing that issue completes the journey → `status:completed`. If no red team tracking is provided, the journey is considered complete once the doc PR is merged.
 
-    d4[approved and merged]
+External blockers (`blocked-by:legal`, `blocked-by:security`, etc.) can be added manually in the detail panel; they coexist with the lifecycle `blocked-by:*` labels and don't affect the auto-managed flow.
 
-    subgraph RT[Red Team]
-        t1[waiting] --> t2["in-progress"] --> t3[done]
-    end
-
-    d2 -->|"+ action:red-team"| t1
-    t3 -->|"- action:red-team"| d4
-    d4 -->|"- action:docs"| fin[journey complete]
-```
-
-1. **R&D** fills in their team, a roadmap milestone link, and an estimated date. Once the feature implementation is complete, they [open an issue using the doc packet template](https://github.com/logos-co/logos-docs/issues/new?template=doc-packet.yml), fill it in (including appointing a Subject-Matter Expert (SME) from their team), then paste the issue URL into the `- link:` field in the `## Doc Packet` section. This signals hand-off to Docs.
-2. **Docs** opens two items in the logos-docs board:
-   - A tracking issue assigned to the R&D SME, back-linked to the journey.
-   - A PR assigned to the writer and linked to the issue. This is where the writing happens. The document progresses through `stub → unverified draft → verified by SME → verified by Red Team` on this PR, with the R&D SME and Red Team reviewing directly on it.
-
-   When the PR is approved, Docs merges it, which automatically closes the linked issue.
-3. **Red Team** gets the `action:red-team` label as soon as docs work is in progress (a doc PR exists). They dogfood the journey and review the docs PR at the same time; once dogfooding is done, so is the PR review. They close their tracking issue when done.
-
-The app tracks these states automatically by reading the issue body and checking GitHub issue/PR states. The `action:rnd`, `action:docs`, and `action:red-team` labels are kept in sync automatically; they tell each team at a glance when it's their turn. A ⚠ badge on a row means the labels are stale and will be corrected the next time the issue is opened in edit mode.
+The app keeps these labels in sync automatically. A ⚠ "Fix Labels" button in the header appears when any issue's labels drift from the computed state; clicking it reconciles everything in one pass (also migrates legacy `action:*` and `blocked:<team>` labels).
 
 ## Run locally
 
@@ -83,6 +69,14 @@ npx serve .
 Then open http://localhost:3000.
 
 > The app uses ES modules and must be served over HTTP; opening `index.html` directly as a `file://` URL will not work.
+
+## Run tests
+
+```sh
+npm test
+```
+
+Uses the built-in `node:test` runner — no dependencies. Covers issue-body parsing, lifecycle status computation, and label reconciliation. CI runs the same command on every push and PR.
 
 ## Licence
 

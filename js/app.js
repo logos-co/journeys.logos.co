@@ -3,7 +3,7 @@
  */
 
 import { getConfig, saveConfig, clearConfig, isConfigured, hasPAT, hasWritePAT, isAdminMode, toggleAdminMode, getReadPAT, getWritePAT } from './config.js';
-import { fetchProjectItems, syncActionLabels, fetchIssue } from './api.js';
+import { fetchProjectItems, syncStatusLabels, fetchIssue, clearRefCache } from './api.js';
 import { renderPipeline, getMismatchCount, getMismatchedItems, updateMismatchEntry } from './pipeline.js';
 import { registerLabelHandlers, getOpenIds, clearOpenState, toggleDetail } from './detail.js';
 import { initDrag } from './drag.js';
@@ -306,14 +306,14 @@ async function fixAllLabels() {
   let failed = 0;
   const fixedItems = []; // items to re-fetch from GitHub for canonical state
 
-  for (const [itemId, { item, actualLabels, expectedActions }] of mismatched) {
+  for (const [itemId, { item, actualLabels, desiredStatus, desiredBlockedBy }] of mismatched) {
     const repoWithOwner = item.content?.repository?.nameWithOwner || '';
     const issueNumber = item.content?.number || 0;
     const [owner, repo] = repoWithOwner.split('/');
     if (!owner || !repo || !issueNumber) continue;
 
     try {
-      await syncActionLabels(owner, repo, issueNumber, actualLabels, expectedActions, pat);
+      await syncStatusLabels(owner, repo, issueNumber, actualLabels, desiredStatus, desiredBlockedBy, pat);
       updateMismatchEntry(itemId, null);
       fixedItems.push({ item, owner, repo, issueNumber });
       fixed++;
@@ -404,7 +404,7 @@ function renderEmptyState() {
           {
             num: '03',
             title: 'Team tracking',
-            desc: 'Colour-coded blocked:team labels show who is on the hook',
+            desc: 'Colour-coded blocked-by:<team> labels show which team is on the hook',
           },
         ].map(f => `
           <div style="background:rgba(12,43,45,0.6);border:1px solid rgba(78,99,94,0.4);border-radius:8px;padding:1rem;">
@@ -573,6 +573,7 @@ export async function loadProject() {
   const config = getConfig();
   state.loading = true;
   state.error = null;
+  clearRefCache(); // fresh project load → refetch PR/issue states
   renderLoadingState();
 
   // Set up refresh button spinner
@@ -667,5 +668,6 @@ async function init() {
   }
 }
 
-// Start the app
-init();
+// Start the app only in a browser environment — keeping the module importable
+// from Node for tests.
+if (typeof document !== 'undefined') init();

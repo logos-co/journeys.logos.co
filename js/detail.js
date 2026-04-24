@@ -4,13 +4,12 @@
 
 import {
   addLabels, removeLabel, fetchIssue,
-  updateIssueBody, createLabel, fetchRef, fetchMilestoneProgress,
-  fetchClosingPR,
+  updateIssueBody, fetchRef, fetchMilestoneProgress,
 } from './api.js';
 import {
-  renderMarkdown, extractAllBlockedLabels, extractDescription,
+  renderMarkdown, extractExternalBlockedLabels, extractDescription,
   extractRnD, extractDocPacket, extractDocumentation, extractRedTeam,
-  computeRnDState, computeDocsState, computeRedTeamState, computeActionLabels,
+  computeStatus, computeDesiredLabels, RND_TEAMS as MARKDOWN_RND_TEAMS,
   setRnDField, setRnDMilestones, setDocPacketLink, setDocTracking, setDocPr, setRedTeamTracking,
 } from './markdown.js';
 import { getReadPAT, getWritePAT, hasWritePAT } from './config.js';
@@ -146,12 +145,12 @@ function renderDetailShell(item) {
         <!-- Blocked labels -->
         <div>
           <div class="flex items-center gap-2 mb-2">
-            <h3 class="text-xs font-semibold uppercase tracking-wider" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Blocked by</h3>
+            <h3 class="text-xs font-semibold uppercase tracking-wider" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">External blockers</h3>
             ${canWrite ? renderAddLabelButton(item) : ''}
           </div>
           <div id="blocked-labels-${item.id}" class="flex flex-wrap gap-2">
             ${renderBlockedLabels(
-              extractAllBlockedLabels(issue.labels?.nodes || []),
+              extractExternalBlockedLabels(issue.labels?.nodes || []),
               item, canWrite
             )}
           </div>
@@ -166,41 +165,29 @@ function renderDetailShell(item) {
 // Workflow sections
 // ---------------------------------------------------------------------------
 
-const RND_COLORS = {
-  'to-be-confirmed':      '#E46962',
-  'confirmed':            '#6AAE7B',
-  'in-progress':          '#FA7B17',
-  'pending-doc-packet':   '#34befc',
-  'doc-packet-delivered': '#6AAE7B',
+const STATUS_COLORS = {
+  'confirm-roadmap':        '#E46962',
+  'confirm-date':           '#FA7B17',
+  'rnd-in-progress':        '#FA7B17',
+  'rnd-overdue':            '#E46962',
+  'waiting-for-doc-packet': '#34BEFC',
+  'doc-packet-delivered':   '#6AAE7B',
+  'doc-ready-for-review':   '#FA7B17',
+  'doc-merged':             '#6AAE7B',
+  'completed':              '#4E635E',
 };
-const DOCS_COLORS = {
-  'waiting':          '#808C78',
-  'in-progress':      '#FA7B17',
-  'merged':           '#6AAE7B',
+const STATUS_LABELS = {
+  'confirm-roadmap':        'Confirm roadmap',
+  'confirm-date':           'Confirm date',
+  'rnd-in-progress':        'R&D in progress',
+  'rnd-overdue':            'R&D overdue',
+  'waiting-for-doc-packet': 'Waiting for doc packet',
+  'doc-packet-delivered':   'Doc packet delivered',
+  'doc-ready-for-review':   'Doc ready for review',
+  'doc-merged':             'Doc merged',
+  'completed':              'Completed',
 };
-const REDTEAM_COLORS = {
-  'waiting':     '#808C78',
-  'in-progress': '#FA7B17',
-  'done':        '#6AAE7B',
-};
-const RND_STATE_LABELS = {
-  'to-be-confirmed':      'To Be Confirmed',
-  'confirmed':            'Confirmed',
-  'in-progress':          'In Progress',
-  'pending-doc-packet':   'Pending Doc Packet',
-  'doc-packet-delivered': 'Doc Packet Delivered',
-};
-const DOCS_STATE_LABELS = {
-  'waiting':          'Waiting',
-  'in-progress':      'In Progress',
-  'merged':           'Merged',
-};
-const REDTEAM_STATE_LABELS = {
-  'waiting':     'Waiting',
-  'in-progress': 'In Progress',
-  'done':        'Done',
-};
-const RND_TEAMS = ['anon-comms', 'messaging', 'core', 'storage', 'blockchain', 'zones', 'smart-contract', 'devkit'];
+const RND_TEAMS = MARKDOWN_RND_TEAMS;
 
 function issueStatusBadge(ref) {
   if (!ref || ref.state === 'error') return '';
@@ -210,14 +197,6 @@ function issueStatusBadge(ref) {
     style="background:${color}22;color:${color};border:1px solid ${color}44;font-family:Arial,Helvetica,sans-serif;">
     <span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:${color};"></span>
     ${label}
-  </span>`;
-}
-
-function stateBadgeHtml(label, color) {
-  return `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium"
-    style="background:${color}22;color:${color};border:1px solid ${color}55;font-family:Arial,Helvetica,sans-serif;">
-    <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${color};"></span>
-    ${escapeHtml(label)}
   </span>`;
 }
 
@@ -250,83 +229,106 @@ async function loadWorkflowSections(itemId, item, bodyOverride, preloadedRefs = 
   const { tracking: docsTracking, pr: docsPr } = extractDocumentation(body);
   const { tracking: redTeamLink } = extractRedTeam(body);
 
-  // Fetch refs — reuse preloaded refs (recursive call after label sync) or pipeline cache.
-  const cache = item?._refCache;
-  const [rtRef, docsTrackingRef, docsPrRef] = preloadedRefs ?? await Promise.all([
-    redTeamLink ? (cache?.redTeamLink === redTeamLink ? Promise.resolve(cache.rtRef) : fetchRef(redTeamLink, pat)) : Promise.resolve(null),
-    docsTracking ? fetchRef(docsTracking, pat) : Promise.resolve(null),
-    docsPr      ? (cache?.docsPr      === docsPr      ? Promise.resolve(cache.docsPrRef) : fetchRef(docsPr,      pat)) : Promise.resolve(null),
-  ]);
-
-  const rndState     = computeRnDState(rnd, docPacketLink);
-  const docsState    = computeDocsState(docsPr, docsPrRef);
-  const redTeamState = computeRedTeamState(redTeamLink, rtRef);
-  const expectedActions = computeActionLabels(rndState, docsState, redTeamState);
-
-  const actualLabels  = (issue.labels?.nodes || []).map(l => l.name);
-  const actualActions = actualLabels.filter(l => l.startsWith('action:'));
-  const mismatch = JSON.stringify([...expectedActions].sort()) !== JSON.stringify([...actualActions].sort());
-
   const repoWithOwner = issue.repository?.nameWithOwner || '';
   const issueNumber   = issue.number || 0;
 
-  // Render action banner
-  const bannerEl = document.getElementById(`action-banner-${itemId}`);
-  if (bannerEl) {
-    bannerEl.innerHTML = renderActionBanner(actualActions, expectedActions, mismatch, itemId, repoWithOwner, issueNumber);
-  }
-
-  // Render workflow sections
+  // ── FAST PATH: render workflow fields immediately, without any network fetch.
+  // Refs populate in the background below.
   const workflowEl = document.getElementById(`workflow-${itemId}`);
   if (!workflowEl) return;
 
   workflowEl.innerHTML = renderWorkflowSections(
-    itemId, rnd, rndState, docPacketLink,
-    docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef,
-    redTeamLink, rtRef, redTeamState,
+    itemId, rnd, docPacketLink,
+    docsTracking, /* docsTrackingRef */ null,
+    docsPr,       /* docsPrRef */ null,
+    redTeamLink,  /* rtRef */ null,
     repoWithOwner, issueNumber, canWrite
   );
-
   attachWorkflowHandlers(itemId, repoWithOwner, issueNumber);
 
-  // Async-load milestone progress indicators and recompute R&D state if all done
-  loadMilestoneProgress(itemId, rnd, docPacketLink, pat);
+  // Provisional banner from body-only state (no ref-dependent phases yet).
+  const actualLabels = (issue.labels?.nodes || []).map(l => l.name);
+  const provisionalStatus = computeStatus({
+    rnd, docPacketLink, docsPr, docsPrRef: null, redTeamLink, redTeamRef: null,
+    allMilestonesDone: false,
+  });
+  const provisionalDesired = computeDesiredLabels(provisionalStatus, rnd.team);
+  const bannerEl = document.getElementById(`action-banner-${itemId}`);
+  if (bannerEl) {
+    bannerEl.innerHTML = renderBlockedByBanner(
+      provisionalStatus, provisionalDesired.blockedBy,
+      detailMismatch(actualLabels, provisionalDesired),
+    );
+  }
 
-  // Async-fetch closing PR suggestion when we have a tracking issue but no pr yet.
-  // Show in both edit and view modes; Confirm requires a write PAT (handled in _saveDocPr).
-  if (docsTracking && !docsPr) {
-    loadDocPrSuggestion(itemId, repoWithOwner, issueNumber, docsTracking, pat);
+  // ── ASYNC PATH: fetch refs, then re-render the banner and the title badges.
+  const refsP = preloadedRefs
+    ? Promise.resolve(preloadedRefs)
+    : Promise.all([
+        redTeamLink  ? fetchRef(redTeamLink,  pat) : Promise.resolve(null),
+        docsTracking ? fetchRef(docsTracking, pat) : Promise.resolve(null),
+        docsPr       ? fetchRef(docsPr,       pat) : Promise.resolve(null),
+      ]);
+  refsP.then(([rtRef, docsTrackingRef, docsPrRef]) => {
+    upgradeWorkflowWithRefs(itemId, {
+      rnd, docPacketLink, docsTracking, docsTrackingRef,
+      docsPr, docsPrRef, redTeamLink, rtRef,
+      actualLabels, repoWithOwner, issueNumber, canWrite,
+    });
+    // Chain milestone-progress + all-done status upgrade onto the ref load.
+    loadMilestoneProgress(itemId, item, rnd, docPacketLink, docsPr, docsPrRef, redTeamLink, rtRef, pat);
+  });
+}
+
+function upgradeWorkflowWithRefs(itemId, ctx) {
+  const {
+    rnd, docPacketLink, docsTracking, docsTrackingRef,
+    docsPr, docsPrRef, redTeamLink, rtRef,
+    actualLabels, repoWithOwner, issueNumber, canWrite,
+  } = ctx;
+
+  const status  = computeStatus({
+    rnd, docPacketLink, docsPr, docsPrRef, redTeamLink, redTeamRef: rtRef,
+    allMilestonesDone: false,
+  });
+  const desired = computeDesiredLabels(status, rnd.team);
+  const mismatch = detailMismatch(actualLabels, desired);
+
+  const bannerEl = document.getElementById(`action-banner-${itemId}`);
+  if (bannerEl) bannerEl.innerHTML = renderBlockedByBanner(status, desired.blockedBy, mismatch);
+
+  // Re-render the workflow section so the doc tracking/PR rows pick up their
+  // open/closed/merged pills (they were null on the fast path).
+  const workflowEl = document.getElementById(`workflow-${itemId}`);
+  if (workflowEl) {
+    workflowEl.innerHTML = renderWorkflowSections(
+      itemId, rnd, docPacketLink,
+      docsTracking, docsTrackingRef, docsPr, docsPrRef,
+      redTeamLink, rtRef,
+      repoWithOwner, issueNumber, canWrite,
+    );
+    attachWorkflowHandlers(itemId, repoWithOwner, issueNumber);
   }
 }
 
-async function loadDocPrSuggestion(itemId, repoWithOwner, issueNumber, trackingUrl, pat) {
-  const slot = document.getElementById(`docs-pr-suggest-${itemId}`);
-  if (!slot) return;
-  const result = await fetchClosingPR(trackingUrl, pat);
-  if (!result || !result.url) return;
-  // If user populated the input in the meantime (edit mode), skip
-  const input = document.getElementById(`docs-pr-${itemId}`);
-  if (input && input.value.trim()) return;
-  const safeUrl = escapeHtml(result.url);
-  const repoSafe = escapeHtml(repoWithOwner);
-  const num = parseInt(issueNumber, 10) || 0;
-  const action = hasWritePAT()
-    ? `<button class="text-xs px-1.5 py-0.5 rounded transition-colors flex-none"
-              style="background:#E46962;color:#fff;"
-              onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'"
-              onclick="window._saveDocPr('${itemId}','${repoSafe}',${num},'${safeUrl}')">Confirm</button>`
-    : `<span class="text-xs italic" style="color:#808C78;">Switch to edit mode to confirm this link</span>`;
-  slot.innerHTML = `<div class="flex items-center gap-2 mt-1 text-xs" style="font-family:Arial,Helvetica,sans-serif;color:#5C6B65;">
-    <span>Suggested:</span>
-    <a href="${safeUrl}" target="_blank" rel="noopener" class="truncate hover:underline" style="color:#3B7CB8;" onclick="event.stopPropagation()">${safeUrl}</a>
-    ${action}
-  </div>`;
-  // Hide the "no doc PR" fallback in view mode since we now have a suggestion.
-  const empty = document.getElementById(`docs-pr-empty-${itemId}`);
-  if (empty) empty.style.display = 'none';
+function detailMismatch(actualLabels, desired) {
+  const statusLabels = actualLabels.filter(l => l.startsWith('status:'));
+  if (statusLabels.length !== 1 || statusLabels[0] !== desired.status) return true;
+  const actualBlocked = actualLabels.filter(l =>
+    l === 'blocked-by:rnd' || l.startsWith('blocked-by:rnd-') ||
+    l === 'blocked-by:docs' || l === 'blocked-by:red-team'
+  ).sort();
+  const wantBlocked = [...desired.blockedBy].sort();
+  if (actualBlocked.length !== wantBlocked.length) return true;
+  for (let i = 0; i < actualBlocked.length; i++) {
+    if (actualBlocked[i] !== wantBlocked[i]) return true;
+  }
+  if (actualLabels.some(l => l.startsWith('action:'))) return true;
+  if (actualLabels.some(l => /^blocked:/i.test(l) && !/^blocked-by:/i.test(l))) return true;
+  return false;
 }
 
-async function loadMilestoneProgress(itemId, rnd, docPacketLink, pat) {
+async function loadMilestoneProgress(itemId, item, rnd, docPacketLink, docsPr, docsPrRef, redTeamLink, rtRef, pat) {
   // Fetch all milestones in parallel instead of sequentially
   const results = await Promise.all(
     rnd.milestones.map(url =>
@@ -353,77 +355,94 @@ async function loadMilestoneProgress(itemId, rnd, docPacketLink, pat) {
     }
   }
 
-  // Recompute R&D state if all roadmap milestones are done
+  // Recompute overall status if all roadmap milestones are done (→ waiting-for-doc-packet).
   const roadmapResults = results.filter(r => r !== null);
   if (roadmapResults.length > 0 && roadmapResults.every(r => r.done)) {
-    const newState = computeRnDState(rnd, docPacketLink, true);
-    const badgeEl = document.getElementById(`rnd-state-badge-${itemId}`);
-    if (badgeEl) {
-      const color = RND_COLORS[newState] || '#808C78';
-      const label = RND_STATE_LABELS[newState] || newState;
-      badgeEl.innerHTML = stateBadgeHtml(label, color);
+    const newStatus = computeStatus({
+      rnd, docPacketLink, docsPr, docsPrRef, redTeamLink, redTeamRef: rtRef,
+      allMilestonesDone: true,
+    });
+    // Re-render the whole banner so the status label, blocked-by pills,
+    // and mismatch warning all reflect the new phase.
+    const bannerEl = document.getElementById(`action-banner-${itemId}`);
+    if (bannerEl) {
+      const desired = computeDesiredLabels(newStatus, rnd.team);
+      const actualLabels = (item?.content?.labels?.nodes || []).map(l => l.name);
+      const mismatch = detailMismatch(actualLabels, desired);
+      bannerEl.innerHTML = renderBlockedByBanner(newStatus, desired.blockedBy, mismatch);
     }
   }
 }
 
-function renderActionBanner(actualActions, expectedActions, mismatch, itemId, repoWithOwner, issueNumber) {
-  const ACTION_COLORS = {
-    'action:rnd':      '#3B7CB8',
-    'action:docs':     '#6AAE7B',
-    'action:red-team': '#E46962',
+export function renderBlockedByBanner(status, blockedByLabels, mismatch) {
+  const BLOCKED_BY_COLORS = {
+    'blocked-by:docs':     '#6AAE7B',
+    'blocked-by:red-team': '#E46962',
   };
-  const labels = mismatch ? expectedActions : actualActions;
-  if (!mismatch && labels.length === 0) return '';
+  const statusColor = STATUS_COLORS[status] || '#808C78';
+  const statusLabel = STATUS_LABELS[status] || status;
+  const statusPill = `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium"
+      style="background:${statusColor}22;color:${statusColor};border:1px solid ${statusColor}55;font-family:Arial,Helvetica,sans-serif;">
+      <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${statusColor};"></span>
+      ${escapeHtml(statusLabel)}
+    </span>`;
 
-  const pills = labels.map(l => {
-    const c = ACTION_COLORS[l] || '#808C78';
+  const pills = blockedByLabels.map(l => {
+    let color = BLOCKED_BY_COLORS[l];
+    if (!color) {
+      if (l === 'blocked-by:rnd' || l.startsWith('blocked-by:rnd-')) color = '#3B7CB8';
+      else color = '#808C78';
+    }
+    let display;
+    if (l === 'blocked-by:rnd')                  display = 'r&d';
+    else if (l.startsWith('blocked-by:rnd-'))    display = l.slice('blocked-by:rnd-'.length);
+    else                                         display = l.replace(/^blocked-by:/, '');
     return `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
-      style="background:${c}22;color:${c};border:1px solid ${c}55;font-family:Arial,Helvetica,sans-serif;">
-      ${escapeHtml(l)}
+      style="background:${color}22;color:${color};border:1px solid ${color}55;font-family:Arial,Helvetica,sans-serif;"
+      title="${escapeHtml(l)}">
+      ${escapeHtml(display)}
     </span>`;
   }).join('');
 
   const warnHtml = mismatch ? `
     <span class="text-xs" style="color:#FA7B17;font-family:Arial,Helvetica,sans-serif;">
-      ⚠ Action labels out of sync
+      ⚠ Labels out of sync — click "Fix Labels"
     </span>` : '';
 
   return `
     <div class="flex items-center gap-2 flex-wrap px-3 py-2 rounded"
          style="background:rgba(255,255,255,0.5);border:1px solid rgba(78,99,94,0.2);">
-      <span class="text-xs font-medium flex-none" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Action required:</span>
-      ${pills || `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">none</span>`}
+      ${statusPill}
+      <span class="text-xs font-medium flex-none" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Blocked by:</span>
+      ${pills || `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">nobody</span>`}
       ${warnHtml}
     </div>`;
 }
 
 function renderWorkflowSections(
-  itemId, rnd, rndState, docPacketLink,
-  docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef,
-  redTeamLink, rtRef, redTeamState,
+  itemId, rnd, docPacketLink,
+  docsTracking, docsTrackingRef, docsPr, docsPrRef,
+  redTeamLink, rtRef,
   repoWithOwner, issueNumber, canWrite
 ) {
   const sections = [];
 
   // ── R&D Section (always shown) ──
-  sections.push(renderRnDSection(itemId, rnd, rndState, repoWithOwner, issueNumber, canWrite));
+  sections.push(renderRnDSection(itemId, rnd, repoWithOwner, issueNumber, canWrite));
 
   // ── Doc Packet Section (always shown) ──
-  sections.push(renderDocPacketSection(itemId, docPacketLink, rndState, canWrite));
+  sections.push(renderDocPacketSection(itemId, docPacketLink, canWrite));
 
   // ── Documentation Section (always shown) ──
-  sections.push(renderDocumentationSection(itemId, docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef, repoWithOwner, issueNumber, canWrite));
+  sections.push(renderDocumentationSection(itemId, docsTracking, docsTrackingRef, docsPr, docsPrRef, repoWithOwner, issueNumber, canWrite));
 
   // ── Red Team Section (always shown) ──
-  sections.push(renderRedTeamSection(itemId, redTeamLink, rtRef, redTeamState, repoWithOwner, issueNumber, canWrite));
+  sections.push(renderRedTeamSection(itemId, redTeamLink, rtRef, repoWithOwner, issueNumber, canWrite));
 
   return `<div class="space-y-3">${sections.join('')}</div>`;
 }
 
-function renderRnDSection(itemId, rnd, rndState, repoWithOwner, issueNumber, canWrite) {
-  const color = RND_COLORS[rndState] || '#808C78';
-  const stateLabel = RND_STATE_LABELS[rndState] || rndState;
-
+function renderRnDSection(itemId, rnd, repoWithOwner, issueNumber, canWrite) {
   let teamHtml, milestoneHtml, dateHtml;
 
   if (canWrite) {
@@ -514,11 +533,10 @@ function renderRnDSection(itemId, rnd, rndState, repoWithOwner, issueNumber, can
       ${fieldRow('Date', dateHtml)}
     </div>`;
 
-  const badge = `<span id="rnd-state-badge-${itemId}">${stateBadgeHtml(stateLabel, color)}</span>`;
-  return sectionCard('R&D', badge, body);
+  return sectionCard('R&D', '', body);
 }
 
-function renderDocPacketSection(itemId, docPacketLink, rndState, canWrite, issueUrl) {
+function renderDocPacketSection(itemId, docPacketLink, canWrite) {
   const isDelivered = !!docPacketLink;
 
   let linkHtml;
@@ -552,22 +570,15 @@ function renderDocPacketSection(itemId, docPacketLink, rndState, canWrite, issue
     </span>`;
   }
 
-  const stateHtml = isDelivered
-    ? stateBadgeHtml('Delivered', '#6AAE7B')
-    : stateBadgeHtml('Waiting for R&D', '#808C78');
-
   const body = `<div class="space-y-1">
     ${fieldRow('Link', linkHtml)}
     ${editHtml}
   </div>`;
 
-  return sectionCard('Doc Packet', stateHtml, body);
+  return sectionCard('Doc Packet', '', body);
 }
 
-function renderDocumentationSection(itemId, docsState, docsTracking, docsTrackingRef, docsPr, docsPrRef, repoWithOwner, issueNumber, canWrite) {
-  const color = DOCS_COLORS[docsState] || '#808C78';
-  const stateLabel = DOCS_STATE_LABELS[docsState] || docsState;
-
+function renderDocumentationSection(itemId, docsTracking, docsTrackingRef, docsPr, docsPrRef, repoWithOwner, issueNumber, canWrite) {
   let trackingHtml, prHtml;
 
   if (canWrite) {
@@ -596,7 +607,9 @@ function renderDocumentationSection(itemId, docsState, docsTracking, docsTrackin
                 style="background:#E46962;color:#fff;font-family:Arial,Helvetica,sans-serif;"
                 onmouseover="this.style.background='#FA7B17'" onmouseout="this.style.background='#E46962'">✓</button>
       </span>
-      <span id="docs-pr-suggest-${itemId}"></span>
+      <span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">
+        Add the doc PR URL here when it's ready for review.
+      </span>
     </span>`;
   } else {
     if (docsTracking) {
@@ -619,10 +632,8 @@ function renderDocumentationSection(itemId, docsState, docsTracking, docsTrackin
         ${issueStatusBadge(docsPrRef)}
       </span>`;
     } else {
-      // Empty pr field: leave a slot for the auto-suggestion to populate, with a fallback "no doc PR".
-      prHtml = `<span class="flex-1 flex flex-col gap-1 min-w-0">
-        <span id="docs-pr-empty-${itemId}" class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">no doc PR</span>
-        <span id="docs-pr-suggest-${itemId}"></span>
+      prHtml = `<span class="text-xs italic" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">
+        no doc PR — the docs team will add this when ready for review
       </span>`;
     }
   }
@@ -632,13 +643,10 @@ function renderDocumentationSection(itemId, docsState, docsTracking, docsTrackin
     ${fieldRow('Doc PR', prHtml)}
   </div>`;
 
-  return sectionCard('Documentation', stateBadgeHtml(stateLabel, color), body);
+  return sectionCard('Documentation', '', body);
 }
 
-function renderRedTeamSection(itemId, redTeamLink, rtRef, redTeamState, repoWithOwner, issueNumber, canWrite) {
-  const color = REDTEAM_COLORS[redTeamState] || '#808C78';
-  const stateLabel = REDTEAM_STATE_LABELS[redTeamState] || redTeamState;
-
+function renderRedTeamSection(itemId, redTeamLink, rtRef, repoWithOwner, issueNumber, canWrite) {
   let linkHtml;
   if (canWrite) {
     linkHtml = `<span class="flex-1 flex items-center gap-1 min-w-0">
@@ -666,7 +674,7 @@ function renderRedTeamSection(itemId, redTeamLink, rtRef, redTeamState, repoWith
     ${fieldRow('Tracking issue', linkHtml)}
   </div>`;
 
-  return sectionCard('Red Team', stateBadgeHtml(stateLabel, color), body);
+  return sectionCard('Red Team', '', body);
 }
 
 // ---------------------------------------------------------------------------
@@ -824,7 +832,7 @@ function renderAddLabelButton(item) {
       <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
         <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
       </svg>
-      Add blocked:* label
+      Add external blocker
     </button>
     <div id="add-label-form-${item.id}" class="hidden items-center gap-2" style="display:none">
       <input id="add-label-input-${item.id}" type="text" placeholder="team-name" class="logos-input text-xs w-36 py-1" />
@@ -924,8 +932,8 @@ export function registerLabelHandlers() {
     if (!owner || !repo || !issueNumber) { showToast('error', 'Could not determine issue repository'); return; }
 
     try {
-      await addLabels(owner, repo, issueNumber, [`blocked:${teamName}`], pat);
-      showToast('success', `Added label "blocked:${teamName}"`);
+      await addLabels(owner, repo, issueNumber, [`blocked-by:${teamName}`], pat);
+      showToast('success', `Added label "blocked-by:${teamName}"`);
       window._cancelAddLabel(itemId);
       await refreshBlockedLabels(itemId, owner, repo, issueNumber, pat);
     } catch (err) {
@@ -1136,7 +1144,7 @@ export function registerLabelHandlers() {
 async function refreshBlockedLabels(itemId, owner, repo, issueNumber, pat) {
   try {
     const freshIssue = await fetchIssue(owner, repo, issueNumber, pat);
-    const blockedLabels = extractAllBlockedLabels((freshIssue.labels || []).map(l => l.name));
+    const blockedLabels = extractExternalBlockedLabels(freshIssue.labels || []);
 
     const container = document.getElementById(`blocked-labels-${itemId}`);
     if (!container) return;

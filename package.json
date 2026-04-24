@@ -1,0 +1,19 @@
+{
+  "name": "journeys.logos.co",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Static SPA for the Logos ecosystem journey pipeline.",
+  "scripts": {
+    "test": "node --test tests/**/*.test.mjs",
+    "lint": "eslint js/ tests/",
+    "serve": "npx serve ."
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "eslint": "^9.39.4"
+  }
+}

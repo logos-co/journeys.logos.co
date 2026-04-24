@@ -16,28 +16,52 @@ export function renderMarkdown(text) {
   return marked.parse(text);
 }
 
+// Lifecycle R&D team slugs — kept in sync with the dropdown in pipeline.js/detail.js.
+export const RND_TEAMS = ['anon-comms','messaging','core','storage','blockchain','zones','smart-contract','devkit'];
+
+// Lifecycle-managed blocked-by:* labels (auto-synced by the app).
+// Any other blocked-by:* label is treated as a manual "external blocker".
+export const LIFECYCLE_BLOCKED_BY = [
+  'blocked-by:rnd',
+  ...RND_TEAMS.map(t => `blocked-by:rnd-${t}`),
+  'blocked-by:docs',
+  'blocked-by:red-team',
+];
+
+export const STATUS_PHASES = [
+  'confirm-roadmap', 'confirm-date', 'rnd-in-progress', 'rnd-overdue',
+  'waiting-for-doc-packet', 'doc-packet-delivered', 'doc-ready-for-review',
+  'doc-merged', 'completed',
+];
+
 /**
- * Extract blocked:* label from an array of label nodes.
+ * Return the primary team blocking progress (from the first blocked-by:* label).
+ * Used for row border color and secondary UI signals.
  */
-export function extractBlockedTeam(labels) {
+export function extractBlockingTeam(labels) {
   if (!labels || !labels.length) return null;
   for (const label of labels) {
-    const m = label.name.match(/^blocked:(.+)$/i);
-    if (m) return m[1].trim();
+    const m = label.name.match(/^blocked-by:(.+)$/i);
+    if (m) {
+      // Strip the "rnd-" prefix so team color mapping works for "blocked-by:rnd-zones" → "zones".
+      return m[1].replace(/^rnd-/, '').trim();
+    }
   }
   return null;
 }
 
 /**
- * Get all blocked:* labels from an array of label nodes.
+ * Return manual "external blocker" labels — any blocked-by:* that is NOT
+ * managed by the lifecycle.
  */
-export function extractAllBlockedLabels(labels) {
+export function extractExternalBlockedLabels(labels) {
   if (!labels || !labels.length) return [];
   return labels
-    .filter(l => /^blocked:/i.test(l.name))
+    .filter(l => /^blocked-by:/i.test(l.name))
+    .filter(l => !LIFECYCLE_BLOCKED_BY.includes(l.name))
     .map(l => ({
       name: l.name,
-      team: l.name.replace(/^blocked:/i, '').trim(),
+      team: l.name.replace(/^blocked-by:/i, '').trim(),
       color: l.color,
     }));
 }
@@ -73,7 +97,9 @@ function getField(section, field) {
     _fieldReCache.set(field, re);
   }
   const m = section.match(re);
-  return m ? m[1].trim() : null;
+  if (!m) return null;
+  const trimmed = m[1].trim();
+  return trimmed === '' ? null : trimmed;
 }
 
 function getFieldAll(section, field) {
@@ -128,47 +154,84 @@ export function extractRedTeam(body) {
   return { tracking: m ? m[1] : null };
 }
 
-// ─── 3-Stakeholder model: state computation ───────────────────────────────────
+// ─── Flat lifecycle: status computation ───────────────────────────────────────
 
-/** @returns {'to-be-confirmed'|'confirmed'|'in-progress'|'pending-doc-packet'|'doc-packet-delivered'} */
-export function computeRnDState(rnd, docPacketLink, allMilestonesDone = false) {
+/** Parse a journey date in DDMmmYY form (e.g. "15Mar26"). Returns Date or null. */
+export function parseJourneyDate(s) {
+  if (!s) return null;
+  const m = s.match(/^(\d{2})(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(\d{2})$/i);
+  if (!m) return null;
+  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  return new Date(2000 + parseInt(m[3], 10), months.indexOf(m[2].toLowerCase()), parseInt(m[1], 10));
+}
+
+function isOverdue(dateStr, today) {
+  const d = parseJourneyDate(dateStr);
+  if (!d) return false;
+  const t = today instanceof Date ? today : new Date();
+  const todayMidnight = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  return d < todayMidnight;
+}
+
+/**
+ * Compute the single flat lifecycle status for a journey.
+ *
+ * @param {Object}   input
+ * @param {Object}   input.rnd                 - { team, milestones:string[], date }
+ * @param {?string}  input.docPacketLink
+ * @param {?string}  input.docsPr              - doc PR URL, if set
+ * @param {?Object}  input.docsPrRef           - resolved PR ref { state: 'open'|'merged'|... }
+ * @param {?string}  input.redTeamLink         - red team tracking URL, if set
+ * @param {?Object}  input.redTeamRef          - resolved ref { type, state }
+ * @param {boolean} [input.allMilestonesDone]  - all roadmap milestones closed
+ * @param {Date}    [input.today]              - injection seam for overdue tests
+ * @returns {'confirm-roadmap'|'confirm-date'|'rnd-in-progress'|'rnd-overdue'|'waiting-for-doc-packet'|'doc-packet-delivered'|'doc-ready-for-review'|'doc-merged'|'completed'}
+ */
+export function computeStatus({ rnd, docPacketLink, docsPr, docsPrRef, redTeamLink, redTeamRef, allMilestonesDone = false, today }) {
+  // Downstream phases take precedence: if a doc PR is set, R&D and doc-packet are by definition done.
+  if (docsPr) {
+    if (docsPrRef?.state === 'merged') {
+      if (redTeamLink && redTeamRef && redTeamRef.type === 'issue' && redTeamRef.state !== 'closed') return 'doc-merged';
+      return 'completed';
+    }
+    return 'doc-ready-for-review';
+  }
   if (docPacketLink) return 'doc-packet-delivered';
-  if (!rnd.team || rnd.milestones.length === 0) return 'to-be-confirmed';
-  if (allMilestonesDone) return 'pending-doc-packet';
-  if (!rnd.date) return 'confirmed';
-  return 'in-progress';
+  // Pre-doc-packet R&D phases.
+  const r = rnd || {};
+  if (!r.team || !r.milestones || r.milestones.length === 0) return 'confirm-roadmap';
+  if (!r.date) return 'confirm-date';
+  if (allMilestonesDone) return 'waiting-for-doc-packet';
+  if (isOverdue(r.date, today)) return 'rnd-overdue';
+  return 'rnd-in-progress';
 }
 
 /**
- * @param {string|null} pr    - doc PR URL
- * @param {{ state: string }|null} [prRef] - resolved PR ref (state: 'open'|'merged'|...)
- * @returns {'waiting'|'in-progress'|'merged'}
+ * Derive the full set of auto-managed labels from a status + rnd team.
+ * @returns {{ status: string, blockedBy: string[] }}
  */
-export function computeDocsState(pr, prRef = null) {
-  if (!pr) return 'waiting';
-  return prRef?.state === 'merged' ? 'merged' : 'in-progress';
+export function computeDesiredLabels(status, rndTeam) {
+  const labelStatus = `status:${status}`;
+  const blockedBy = [];
+  if (['confirm-roadmap','confirm-date','rnd-in-progress','rnd-overdue','waiting-for-doc-packet'].includes(status)) {
+    blockedBy.push(rndTeam && RND_TEAMS.includes(rndTeam) ? `blocked-by:rnd-${rndTeam}` : 'blocked-by:rnd');
+  } else if (status === 'doc-packet-delivered') {
+    blockedBy.push('blocked-by:docs');
+  } else if (status === 'doc-ready-for-review') {
+    // Doc PR needs review from BOTH R&D (the SME) and Red Team before docs can merge.
+    blockedBy.push('blocked-by:red-team');
+    blockedBy.push(rndTeam && RND_TEAMS.includes(rndTeam) ? `blocked-by:rnd-${rndTeam}` : 'blocked-by:rnd');
+  } else if (status === 'doc-merged') {
+    blockedBy.push('blocked-by:red-team');
+  }
+  return { status: labelStatus, blockedBy };
 }
 
-/**
- * @param {string|null} tracking
- * @param {{ type: string, state: string }|null} ref
- * @returns {'waiting'|'in-progress'|'done'}
- */
-export function computeRedTeamState(tracking, ref) {
-  if (!tracking) return 'waiting';
-  if (!ref || ref.state === 'error') return 'in-progress';
-  if (ref.type === 'issue') return ref.state === 'closed' ? 'done' : 'in-progress';
-  return 'done'; // non-issue URL = done
-}
+/** All repo-level status:* label names (for ensure-create). */
+export const STATUS_LABEL_NAMES = STATUS_PHASES.map(p => `status:${p}`);
 
-/** Compute which action:* labels should be present given current states. */
-export function computeActionLabels(rndState, docsState, redTeamState) {
-  const labels = [];
-  if (rndState !== 'doc-packet-delivered') labels.push('action:rnd');
-  if (rndState === 'doc-packet-delivered' && docsState !== 'merged') labels.push('action:docs');
-  if (docsState === 'in-progress' && redTeamState !== 'done') labels.push('action:red-team');
-  return labels;
-}
+/** All repo-level lifecycle label names (status + blocked-by). */
+export const LIFECYCLE_LABEL_NAMES = [...STATUS_LABEL_NAMES, ...LIFECYCLE_BLOCKED_BY];
 
 // ─── 3-Stakeholder model: body update helpers ─────────────────────────────────
 
