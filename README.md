@@ -45,13 +45,13 @@ flowchart TD
         s3o --> s4
     end
 
-    s4 -->|- link: set| s5
+    s4 -->|doc-packet link added| s5
 
     subgraph DOCS[Blocked by Docs]
         s5[doc-packet-delivered]
     end
 
-    s5 -->|- pr: set manually| s6
+    s5 -->|doc-PR link added| s6
 
     subgraph REVIEW[Blocked by R&D SME + Red Team]
         s6[doc-ready-for-review]
