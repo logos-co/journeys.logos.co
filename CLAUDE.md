@@ -109,6 +109,16 @@ gh project item-add 12 --owner logos-co --url <issue-url>
 
 Journey type label colors: gui user=`D94F45`, developer=`3B7CB8`, node operator=`C4912C`.
 
+## Knowledge Graph
+
+A graphify knowledge graph of this project lives in `graphify-out/` (gitignored). Use it to navigate the codebase before making non-trivial changes:
+
+- `graph.html` — interactive view (open in any browser, no server needed)
+- `graph.json` — raw data for `/graphify query "..."`, `/graphify path "A" "B"`, `/graphify explain "X"`
+- `GRAPH_REPORT.md` — god nodes, surprising connections, suggested questions
+
+Rebuild after architectural changes with `/graphify .` (or `/graphify . --update` for an incremental refresh).
+
 ## Branding
 
 Sandy/parchment light theme. Forest `#0E2618` text, warmgray `#DDDED8` body bg, coral `#E46962` accent, teal `#0C2B2D` header. Lambda (λ) brand mark.

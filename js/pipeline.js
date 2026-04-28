@@ -16,6 +16,18 @@ import { fetchRefsBatch, createIssue, addItemToProject, fetchMilestoneProgress, 
 // Active filters — persist until project reload
 let activeTeamFilter  = null; // null | team slug | 'unassigned'
 let activeStateFilter = null; // null | 'blocked-by:<...>' | 'mismatch'
+let activeTypeFilter  = null; // null | 'gui-user' | 'developer' | 'node-operator' | 'untagged'
+
+// Persona type labels — single source of truth.
+const TYPE_DEFS = [
+  { slug: 'gui-user',      label: 'gui user',      color: '#D94F45' },
+  { slug: 'developer',     label: 'developer',     color: '#3B7CB8' },
+  { slug: 'node-operator', label: 'node operator', color: '#C4912C' },
+];
+const UNTAGGED_COLOR = '#808C78';
+const TYPE_LABEL_TO_SLUG = Object.fromEntries(TYPE_DEFS.map(d => [d.label, d.slug]));
+const TYPE_SLUGS         = new Set([...TYPE_DEFS.map(d => d.slug), 'untagged']);
+const TYPE_COLOR         = (slug) => slug === 'untagged' ? UNTAGGED_COLOR : (TYPE_DEFS.find(d => d.slug === slug)?.color ?? UNTAGGED_COLOR);
 
 // Global mismatch registry: itemId → { item, actualLabels, desiredStatus, desiredBlockedBy }
 const _mismatchedItems = new Map();
@@ -65,8 +77,10 @@ export function renderPipeline(container, items, projectTitle, projectId) {
   const _urlParams  = new URLSearchParams(window.location.search);
   activeTeamFilter  = _urlParams.get('team')   || null;
   activeStateFilter = _urlParams.get('action') || null;
+  const _typeParam  = (_urlParams.get('type') || '').trim().toLowerCase();
+  activeTypeFilter  = TYPE_SLUGS.has(_typeParam) ? _typeParam : null;
 
-  const canDrag  = hasWritePAT() && !activeTeamFilter && !activeStateFilter;
+  const canDrag  = hasWritePAT() && !activeTeamFilter && !activeStateFilter && !activeTypeFilter;
 
   const openItems   = items.filter(i => i.content?.state !== 'CLOSED');
   const closedItems = items
@@ -185,7 +199,18 @@ export function renderPipeline(container, items, projectTitle, projectId) {
     const btn = document.querySelector(`.filter-action-pill[data-action="${CSS.escape(activeStateFilter)}"]`);
     if (btn) pillActivate(btn, actionPillColor(activeStateFilter));
   }
-  if (activeTeamFilter || activeStateFilter) applyFilter(allItems);
+  if (activeTypeFilter) {
+    const btn = document.querySelector(`.filter-type-pill[data-type="${CSS.escape(activeTypeFilter)}"]`);
+    if (btn) {
+      typePillActivate(btn);
+    } else {
+      // Persona row didn't render (no journey on the board carries this slug).
+      // Drop the orphan filter so it can't silently affect a later applyFilter().
+      activeTypeFilter = null;
+      syncFiltersToUrl();
+    }
+  }
+  if (activeTeamFilter || activeStateFilter || activeTypeFilter) applyFilter(allItems);
   attachNewJourneyHandler(projectId);
   loadAllStakeholderBadges(allItems);
   loadInstructions();
@@ -257,10 +282,21 @@ function renderFilterBar(openItems = []) {
   // Collect distinct R&D team slugs from open items (for the team-ownership row).
   const teamSet = new Set();
   let hasUnassigned = false;
+  // Persona type slugs present on at least one open journey, plus whether any journey is untagged.
+  const typeSet = new Set();
+  let hasUntagged = false;
   for (const item of openItems) {
     const { rnd } = getParsedSections(item);
     if (rnd.team) teamSet.add(rnd.team);
     else hasUnassigned = true;
+
+    const labels = item.content?.labels?.nodes || [];
+    let foundType = false;
+    for (const l of labels) {
+      const slug = TYPE_LABEL_TO_SLUG[l.name.trim().toLowerCase()];
+      if (slug) { typeSet.add(slug); foundType = true; }
+    }
+    if (!foundType) hasUntagged = true;
   }
 
   const pill = (cls, dataAttr, label) => `
@@ -286,6 +322,22 @@ function renderFilterBar(openItems = []) {
       ${hasUnassigned ? pill('filter-team-pill', 'data-team="unassigned"', 'unassigned') : ''}
     </div>` : '';
 
+  // Persona row — single-select. Order: gui user, developer, node operator, untagged.
+  const typePill = (slug, label) => {
+    const c = TYPE_COLOR(slug);
+    return `<button class="filter-type-pill inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all"
+            data-type="${escapeHtml(slug)}"
+            style="border:1px solid ${c}40;background:${c}10;color:${c};font-family:Arial,Helvetica,sans-serif;cursor:pointer;">
+      ${escapeHtml(label)}
+    </button>`;
+  };
+  const typeRow = (typeSet.size > 0 || hasUntagged) ? `
+    <div id="type-filter-bar" class="flex items-center gap-2 flex-wrap">
+      <span class="text-xs flex-none" style="color:#808C78;font-family:Arial,Helvetica,sans-serif;">Persona:</span>
+      ${TYPE_DEFS.filter(d => typeSet.has(d.slug)).map(d => typePill(d.slug, d.label)).join('')}
+      ${hasUntagged ? typePill('untagged', 'untagged') : ''}
+    </div>` : '';
+
   // "Blocked by" filter pills — order: R&D (all) → docs → red team → per-team → unassigned → mismatch.
   const rndTeamsPresent = [...teamSet].sort();
   const blockedByFilters = [
@@ -302,12 +354,12 @@ function renderFilterBar(openItems = []) {
       ${blockedByFilters.map(f => pill('filter-action-pill', `data-action="${escapeHtml(f.key)}"`, f.label)).join('')}
     </div>`;
 
-  return `<div id="filter-bar" class="space-y-1.5">${teamRow}${actionRow}</div>`;
+  return `<div id="filter-bar" class="space-y-1.5">${typeRow}${teamRow}${actionRow}</div>`;
 }
 
 function applyFilter(allItems) {
   const noMatch   = document.getElementById('no-filter-match');
-  const anyFilter = activeTeamFilter || activeStateFilter;
+  const anyFilter = activeTeamFilter || activeStateFilter || activeTypeFilter;
 
   // Toggle drag hint
   const dragHint = document.getElementById('drag-hint');
@@ -366,7 +418,13 @@ function applyFilter(allItems) {
       }
     }
 
-    const matches = matchesTeam && matchesAction;
+    let matchesType = true;
+    if (activeTypeFilter) {
+      const types = (wrapper.dataset.types || '').split(' ').filter(Boolean);
+      matchesType = activeTypeFilter === 'untagged' ? types.length === 0 : types.includes(activeTypeFilter);
+    }
+
+    const matches = matchesTeam && matchesAction && matchesType;
     wrapper.classList.toggle('hidden', !matches);
     if (matches) visible++;
   }
@@ -377,6 +435,7 @@ function syncFiltersToUrl() {
   const params = new URLSearchParams();
   if (activeTeamFilter)  params.set('team',   activeTeamFilter);
   if (activeStateFilter) params.set('action', activeStateFilter);
+  if (activeTypeFilter)  params.set('type',   activeTypeFilter);
   const qs = params.toString();
   history.replaceState(null, '', qs ? '?' + qs : window.location.pathname);
 }
@@ -422,6 +481,20 @@ function teamPillActivate(btn) {
   btn.style.borderColor = teamColor(team, 0.7);
 }
 
+function typePillReset(btn) {
+  const c = TYPE_COLOR(btn.dataset.type);
+  btn.style.background  = `${c}10`;
+  btn.style.color       = c;
+  btn.style.borderColor = `${c}40`;
+}
+
+function typePillActivate(btn) {
+  const c = TYPE_COLOR(btn.dataset.type);
+  btn.style.background  = `${c}33`;
+  btn.style.color       = c;
+  btn.style.borderColor = `${c}cc`;
+}
+
 function attachFilterHandlers(allItems) {
   // Action pills
   document.querySelectorAll('.filter-action-pill').forEach(btn => {
@@ -456,6 +529,23 @@ function attachFilterHandlers(allItems) {
       syncFiltersToUrl();
     });
   });
+
+  // Type pills — single-select
+  document.querySelectorAll('.filter-type-pill').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const slug = btn.dataset.type;
+      if (activeTypeFilter === slug) {
+        activeTypeFilter = null;
+        typePillReset(btn);
+      } else {
+        document.querySelectorAll('.filter-type-pill').forEach(typePillReset);
+        activeTypeFilter = slug;
+        typePillActivate(btn);
+      }
+      applyFilter(allItems);
+      syncFiltersToUrl();
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -480,6 +570,7 @@ function renderPipelineRow(item, index, canDrag, canWrite = false) {
 
   const typeLabels    = labels.filter(l => /^(gui user|developer|node operator)$/i.test(l.name.trim()));
   const releaseLabels = labels.filter(l => /^testnet\b/i.test(l.name.trim()));
+  const typeSlugs     = typeLabels.map(l => TYPE_LABEL_TO_SLUG[l.name.trim().toLowerCase()]).filter(Boolean);
 
   const JOURNEY_COLORS = { 'gui user': 'D94F45', 'developer': '3B7CB8', 'node operator': 'C4912C' };
   const RELEASE_COLORS = { 'testnet v0.1': '4E635E', 'testnet v0.2': '2E86AB', 'testnet v0.3': 'A25C28', 'testnet unscheduled': '808C78' };
@@ -504,7 +595,8 @@ function renderPipelineRow(item, index, canDrag, canWrite = false) {
   return `
     <div id="filter-item-${item.id}"
          data-action-labels="${escapeHtml(JSON.stringify(blockedByLabels))}"
-         data-rnd-team="${escapeHtml(rndTeamSlug)}">
+         data-rnd-team="${escapeHtml(rndTeamSlug)}"
+         data-types="${escapeHtml(typeSlugs.join(' '))}">
       <div
         id="row-${item.id}"
         data-item-id="${item.id}"
