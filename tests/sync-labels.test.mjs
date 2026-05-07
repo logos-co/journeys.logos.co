@@ -187,3 +187,15 @@ test('completed status → no blocked-by labels desired, stale ones removed', ()
     toRemove: ['blocked-by:red-team', 'status:doc-merged'],
   });
 });
+
+test('completed status → all blocked-by:* removed including non-lifecycle (e.g. closed issue with external blocker)', () => {
+  const result = plan(
+    ['status:rnd-in-progress', 'blocked-by:rnd-core', 'blocked-by:legal', 'testnet v0.2', 'developer'],
+    'status:completed',
+    [],
+  );
+  assert.deepEqual(result, {
+    toAdd:    ['status:completed'],
+    toRemove: ['blocked-by:legal', 'blocked-by:rnd-core', 'status:rnd-in-progress'],
+  });
+});

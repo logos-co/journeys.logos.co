@@ -651,8 +651,16 @@ export function planLabelChanges(currentLabels, desiredStatus, desiredBlockedBy)
   if (!current.has(desiredStatus)) toAdd.push(desiredStatus);
 
   // 2. Lifecycle blocked-by:* — remove any that aren't desired; add missing desired.
+  // Special case: a completed journey is unblocked by definition, so strip ALL blocked-by:*
+  // including non-lifecycle ones (e.g. blocked-by:legal). For other statuses, non-lifecycle
+  // blocked-by:* labels are preserved as external blockers.
+  const stripAllBlockedBy = desiredStatus === 'status:completed';
   for (const l of currentLabels) {
-    if (LIFECYCLE_BLOCKED_BY.includes(l) && !desiredSet.has(l)) toRemove.push(l);
+    if (stripAllBlockedBy && l.startsWith('blocked-by:') && !desiredSet.has(l)) {
+      toRemove.push(l);
+    } else if (LIFECYCLE_BLOCKED_BY.includes(l) && !desiredSet.has(l)) {
+      toRemove.push(l);
+    }
   }
   for (const l of desiredBlockedBy) {
     if (!current.has(l)) toAdd.push(l);

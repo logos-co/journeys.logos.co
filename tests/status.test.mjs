@@ -218,3 +218,51 @@ test('fixture issue-47: doc packet link present, no doc PR → doc-packet-delive
   assert.equal(status, 'status:doc-packet-delivered');
   assert.deepEqual(blockedBy, ['blocked-by:docs']);
 });
+
+// ─── Closed issues short-circuit to completed ─────────────────────────────────
+
+test('closed issue with empty body → completed, no blocked-by', () => {
+  const rnd = extractRnD(empty);
+  const status = computeStatus({
+    rnd, docPacketLink: null, docsPr: null, docsPrRef: null,
+    redTeamLink: null, redTeamRef: null, allMilestonesDone: false, today,
+    issueClosed: true,
+  });
+  assert.equal(status, 'completed');
+  assert.deepEqual(computeDesiredLabels(status, rnd.team).blockedBy, []);
+});
+
+test('closed issue mid-lifecycle (would otherwise be rnd-in-progress) → completed', () => {
+  const rnd = extractRnD(futureDate);
+  const status = computeStatus({
+    rnd, docPacketLink: null, docsPr: null, docsPrRef: null,
+    redTeamLink: null, redTeamRef: null, allMilestonesDone: false, today,
+    issueClosed: true,
+  });
+  assert.equal(status, 'completed');
+});
+
+test('closed issue with open doc PR (would otherwise be doc-ready-for-review) → completed', () => {
+  const rnd = extractRnD(docPrOpen);
+  const status = computeStatus({
+    rnd,
+    docPacketLink: 'https://github.com/logos-co/logos-docs/issues/1',
+    docsPr: 'https://github.com/logos-co/logos-docs/pull/3',
+    docsPrRef: { state: 'open' },
+    redTeamLink: 'https://github.com/logos-co/ecosystem/issues/10',
+    redTeamRef: { type: 'issue', state: 'open' },
+    allMilestonesDone: false, today,
+    issueClosed: true,
+  });
+  assert.equal(status, 'completed');
+});
+
+test('open issue (issueClosed: false) behaves identically to omitted flag', () => {
+  const rnd = extractRnD(empty);
+  const closed = computeStatus({
+    rnd, docPacketLink: null, docsPr: null, docsPrRef: null,
+    redTeamLink: null, redTeamRef: null, allMilestonesDone: false, today,
+    issueClosed: false,
+  });
+  assert.equal(closed, 'confirm-roadmap');
+});
