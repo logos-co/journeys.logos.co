@@ -770,9 +770,10 @@ async function loadAllStakeholderBadges(items) {
     const docsPrRef = docsPrIdx >= 0 ? refResults[docsPrIdx] : null;
     item._refCache  = { redTeamLink, rtRef, docsPr, docsPrRef };
 
+    const issueClosed = String(item.content?.state || '').toUpperCase() === 'CLOSED';
     const status = computeStatus({
       rnd, docPacketLink, docsPr, docsPrRef, redTeamLink, redTeamRef: rtRef,
-      allMilestonesDone: false,
+      allMilestonesDone: false, issueClosed,
     });
     const desired = computeDesiredLabels(status, rnd.team);
 
@@ -825,6 +826,12 @@ function computeLifecycleMismatch(actualLabels, desired) {
     if (actualBlocked[i] !== wantBlocked[i]) return true;
   }
 
+  // A completed journey must have no blocked-by:* at all (including non-lifecycle ones).
+  if (desired.status === 'status:completed' &&
+      actualLabels.some(l => l.startsWith('blocked-by:'))) {
+    return true;
+  }
+
   // Any legacy labels still present?
   if (actualLabels.some(l => l.startsWith('action:'))) return true;
   if (actualLabels.some(l => /^blocked:/i.test(l) && !/^blocked-by:/i.test(l))) return true;
@@ -851,10 +858,11 @@ async function loadMilestoneProgressForPipeline(items, pat) {
     const docsPrRef = item._refCache?.docsPrRef || null;
     const rtRef     = item._refCache?.rtRef     || null;
 
+    const issueClosed = String(item.content?.state || '').toUpperCase() === 'CLOSED';
     // Only relevant pre-doc-packet (has team + milestones, no doc packet yet).
     const baseStatus = computeStatus({
       rnd, docPacketLink, docsPr, docsPrRef, redTeamLink: redTeam.tracking, redTeamRef: rtRef,
-      allMilestonesDone: false,
+      allMilestonesDone: false, issueClosed,
     });
     if (!['rnd-in-progress','rnd-overdue','confirm-date'].includes(baseStatus)) continue;
 

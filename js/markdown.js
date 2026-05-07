@@ -187,7 +187,9 @@ function isOverdue(dateStr, today) {
  * @param {Date}    [input.today]              - injection seam for overdue tests
  * @returns {'confirm-roadmap'|'confirm-date'|'rnd-in-progress'|'rnd-overdue'|'waiting-for-doc-packet'|'doc-packet-delivered'|'doc-ready-for-review'|'doc-merged'|'completed'}
  */
-export function computeStatus({ rnd, docPacketLink, docsPr, docsPrRef, redTeamLink, redTeamRef, allMilestonesDone = false, today }) {
+export function computeStatus({ rnd, docPacketLink, docsPr, docsPrRef, redTeamLink, redTeamRef, allMilestonesDone = false, today, issueClosed = false }) {
+  // A closed GitHub issue is the user's explicit "done" signal — short-circuit to completed.
+  if (issueClosed) return 'completed';
   // Downstream phases take precedence: if a doc PR is set, R&D and doc-packet are by definition done.
   if (docsPr) {
     if (docsPrRef?.state === 'merged') {
