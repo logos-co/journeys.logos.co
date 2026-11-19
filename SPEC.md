@@ -96,7 +96,7 @@ Four single-select rows and one multi-select row, rendered above the pipeline li
 
 | Row | Type | Source labels |
 |---|---|---|
-| Persona | single-select | `gui user`, `developer`, `node operator` |
+| Persona | single-select | `gui user`, `cli user`, `developer`, `node operator` |
 | Driver | single-select | `driver:*` labels from the fixed allowlist (see Part III) |
 | Team | single-select | derived from `## R&D - team:` body field + repo team mapping |
 | Blocked by | single-select | `blocked-by:*` labels present on open items |
@@ -122,7 +122,7 @@ drag is always gated by the *any-filter-active* flag, never by individual rows.
 
 ### E. Journey rendering — visual encoding
 
-- **Persona color**: `gui user` red, `developer` blue, `node operator` amber.
+- **Persona color**: `gui user` red, `cli user` teal, `developer` blue, `node operator` amber.
 - **Release color**: assigned from a fixed palette keyed by slug. `testnet unscheduled`
   uses a muted grey.
 - **Team color** (`teamColor` in `app.js`): deterministic hash of the team name into HSL,

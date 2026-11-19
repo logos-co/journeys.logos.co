@@ -16,13 +16,14 @@ import { fetchRefsBatch, createIssue, addItemToProject, fetchMilestoneProgress, 
 // Active filters — persist until project reload
 let activeTeamFilter    = null;        // null | team slug | 'unassigned'
 let activeStateFilter   = null;        // null | 'blocked-by:<...>' | 'mismatch'
-let activeTypeFilter    = null;        // null | 'gui-user' | 'developer' | 'node-operator' | 'untagged'
+let activeTypeFilter    = null;        // null | 'gui-user' | 'cli-user' | 'developer' | 'node-operator' | 'untagged'
 let activeReleaseFilter = new Set();   // multi-select; slug form (e.g. 'testnet-v0-1')
 let activeDriverFilter  = null;        // null | driver slug (e.g. 'rfp')
 
 // Persona type labels — single source of truth.
 const TYPE_DEFS = [
   { slug: 'gui-user',      label: 'gui user',      color: '#D94F45' },
+  { slug: 'cli-user',      label: 'cli user',      color: '#2A9D8F' },
   { slug: 'developer',     label: 'developer',     color: '#3B7CB8' },
   { slug: 'node-operator', label: 'node operator', color: '#C4912C' },
 ];
@@ -421,7 +422,7 @@ function renderFilterBar(openItems = []) {
       ${hasUnassigned ? pill('filter-team-pill', 'data-team="unassigned"', 'unassigned') : ''}
     </div>` : '';
 
-  // Persona row — single-select. Order: gui user, developer, node operator, untagged.
+  // Persona row — single-select. Order: gui user, cli user, developer, node operator, untagged.
   const typePill = (slug, label) => {
     const c = TYPE_COLOR(slug);
     return `<button class="filter-type-pill inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all"
@@ -793,14 +794,14 @@ function renderPipelineRow(item, index, canDrag, canWrite = false) {
   const { rnd, docs: parsedDocs } = getParsedSections(item);
   const rndTeamSlug  = rnd.team || '';
 
-  const typeLabels    = labels.filter(l => /^(gui user|developer|node operator)$/i.test(l.name.trim()));
+  const typeLabels    = labels.filter(l => TYPE_LABEL_TO_SLUG[l.name.trim().toLowerCase()]);
   const releaseLabels = labels.filter(l => /^testnet\b/i.test(l.name.trim()));
   const typeSlugs     = typeLabels.map(l => TYPE_LABEL_TO_SLUG[l.name.trim().toLowerCase()]).filter(Boolean);
   const releaseSlugs  = releaseLabels.map(l => releaseSlug(l.name));
   const driverSlugs   = driverSlugsFromLabels(labels);
   const driverHtml    = renderDriverCell(labels);
 
-  const JOURNEY_COLORS = { 'gui user': 'D94F45', 'developer': '3B7CB8', 'node operator': 'C4912C' };
+  const JOURNEY_COLORS = Object.fromEntries(TYPE_DEFS.map(d => [d.label, d.color.slice(1)]));
 
   const labelPill = (l) => {
     const key = l.name.trim().toLowerCase();
@@ -1118,6 +1119,7 @@ async function loadMilestoneProgressForPipeline(items, pat) {
 const JOURNEY_TYPES = [
   { name: 'developer',     label: 'Developer',      color: '3B7CB8' },
   { name: 'gui user',      label: 'GUI User',        color: 'D94F45' },
+  { name: 'cli user',      label: 'CLI User',        color: '2A9D8F' },
   { name: 'node operator', label: 'Node Operator',   color: 'C4912C' },
 ];
 const RELEASES = ['testnet v0.1', 'testnet v0.2', 'testnet v0.3', 'testnet unscheduled'];

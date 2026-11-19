@@ -32,7 +32,7 @@ gh issue create --repo logos-co/journeys.logos.co \
 ```
 
 Rules:
-- Always include **one journey type label** (`gui user` / `developer` / `node operator`) and
+- Always include **one journey type label** (`gui user` / `cli user` / `developer` / `node operator`) and
   **one target `testnet` label**. Ask for clarification if either is missing.
 - New journeys start at `status:confirm-roadmap` with `blocked-by:rnd` (or `blocked-by:rnd-<team>`
   if the team is known).
@@ -66,5 +66,5 @@ gh issue edit <number> --repo logos-co/journeys.logos.co --add-label "driver:rfp
 
 ## Label color reference
 
-- Journey type: `gui user`=`D94F45`, `developer`=`3B7CB8`, `node operator`=`C4912C`
+- Journey type: `gui user`=`D94F45`, `cli user`=`2A9D8F`, `developer`=`3B7CB8`, `node operator`=`C4912C`
 - Driver: `rfp`=`8C6A2E`, `quest`=`7A4E73`, `sample-app`=`5E8C6A`
