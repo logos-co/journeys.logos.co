@@ -42,7 +42,7 @@ only want to run the app.
 Journeys are GitHub issues in the connected project board (`logos-co/journeys.logos.co`,
 project #12). Each issue carries:
 
-- **Journey type label** (exactly one): `gui user`, `developer`, or `node operator`
+- **Journey type label** (exactly one): `gui user`, `cli user`, `developer`, or `node operator`
 - **Target release label** (one): `testnet v0.1`, `testnet v0.2`, … (matched by `/^testnet\b/i`)
 - **Lifecycle status label** (exactly one): `status:<phase>` — auto-managed by the app
 - **Blocking labels** (one or more): `blocked-by:<team>` — auto-managed from the lifecycle,
